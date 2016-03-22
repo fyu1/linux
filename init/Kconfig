@@ -1038,6 +1038,18 @@ config RT_GROUP_SCHED
 
 endif #CGROUP_SCHED
 
+config INTEL_RDT
+	bool "Intel Resource Director Technology support"
+	depends on X86_64 && CPU_SUP_INTEL
+	help
+	  This option provides support for Cache allocation which is a
+	  sub-feature of Intel Resource Director  Technology(RDT).
+	  Current implementation supports L3 cache allocation.
+	  Using this feature a user can specify the amount of L3 cache space
+	  into which an application can fill.
+
+	  Say N if unsure.
+
 config CGROUP_PIDS
 	bool "PIDs controller"
 	help
