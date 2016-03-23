@@ -52,6 +52,10 @@ SUBSYS(net_prio)
 SUBSYS(hugetlb)
 #endif
 
+#if IS_ENABLED(CONFIG_INTEL_RDT)
+SUBSYS(intel_rdt)
+#endif
+
 #if IS_ENABLED(CONFIG_CGROUP_PIDS)
 SUBSYS(pids)
 #endif
