@@ -1,0 +1,29 @@
+1. Make subdirectory in intel_rdt directory:
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1
+sudo mkdir /sys/fs/cgroup/intel_rdt/g2
+sudo mkdir /sys/fs/cgroup/intel_rdt/g3
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1/g11
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1/g12
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1/g13
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1/g11/g111
+sudo mkdir /sys/fs/cgroup/intel_rdt/g1/g11/g112
+sudo mkdir /sys/fs/cgroup/intel_rdt/g2/g21
+
+success: The sub directories are created.
+failure: the direcotries are not created.
+
+2. L3 cbm test:
+for ((  i = 0 ;  i <= 100;  i++  ))
+do
+/bin/echo 0xf > /sys/fs/cgroup/intel_rdt/g1/g11/g111/intel_rdt.l3_cbm
+/bin/echo 0x7 > /sys/fs/cgroup/intel_rdt/g1/g11/g112/intel_rdt.l3_cbm
+/bin/echo 0x7 > /sys/fs/cgroup/intel_rdt/g1/g11/g111/intel_rdt.l3_cbm
+/bin/echo 0x3 > /sys/fs/cgroup/intel_rdt/g1/g11/g111/intel_rdt.l3_cbm
+/bin/echo 0xff > /sys/fs/cgroup/intel_rdt/g1/g11/intel_rdt.l3_cbm
+/bin/echo 0xf > /sys/fs/cgroup/intel_rdt/g1/g11/intel_rdt.l3_cbm
+/bin/echo 0xf > /sys/fs/cgroup/intel_rdt/g1/g12/intel_rdt.l3_cbm
+/bin/echo 0x1f > /sys/fs/cgroup/intel_rdt/g1/g13/intel_rdt.l3_cbm
+done
+
+success: the cbms are updated successfully.
+failure: the cbms cannot be updated.
