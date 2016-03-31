@@ -1,0 +1,7 @@
+CAT/CDP kernel tree hosts patches for the CAT and CDP features that will be pushed to upstream.
+
+The purpose of the tree is for the community to test the features. The latest CAT patches are in branch CAT16.1.
+The latest CDP patches are in branch CAT15.CDP2.5. The patches in these two branches are based on cgroup,
+but that approach has not been accepted by the Linux community, so the patches in these two branches are for users
+to experiment with the feature. And the two branches are based on kernel version 4.6-rc1. 
+Please see l3_cat_test_cases.txt in root directory for some simple test cases.
