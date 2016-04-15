@@ -1,0 +1,19 @@
+root access (fedora): su -
+root access (ubuntu): sudo -i
+
+Make the scripts executable by changing permissions
+
+Please execute "run_tests.sh" as root
+
+./run_tests WIDHT DEPTH NUM_OF_TASKS_PER_FILE (E.g: ./run_tests 2 2 1)
+
+This creates a directory structure which has width of 2 and depth of 2. i.e. the paths are sai/1/1/, sai/1/2/, sai/2/1/, sai/2/2/
+and as each level in hierarchy has "tasks" file asscoiated, NUM_OF_TASKS_PER_FILE lets you decide on number of tasks this file can have.
+
+Please make sure that total number of tasks are less than 10000 (to make sure that your system does not run out of memory).
+This number can be calculated as [(width)^depth + (width)^(depth-1) + .... + (width)^0] * NUM_OF_TASKS_PER_FILE
+
+There are some bugs and some optimizations that should be done, and I will work on that.
+Known bug: ./run_tests 1 1 1
+
+So, please execute this with 2<=WIDTH<=5 and 2<=DEPTH<=5 and 1<=NUM_OF_TASKS_PER_FILE<=10

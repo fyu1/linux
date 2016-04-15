@@ -1,15 +1,15 @@
 #!/bin/bash
 #set -vx
 
-WIDTH=2;
-DEPTH=4;
+WIDTH=$1;
+DEPTH=$2;
 cd /sys/fs/cgroup/systemd/
 
 create_sub_dir () {
 	local i;
 	for (( i=1; i<=$WIDTH; i++ ))
 	do
-		sudo mkdir $i;
+		/bin/mkdir $i;
 	done
 	let DEPTH=$DEPTH-1
 }
@@ -18,7 +18,7 @@ create_childs() {
 	local j;
 	cd $1;
 	create_sub_dir
-	if [ $DEPTH -le 0 ]; then
+	if [ $DEPTH -eq 0 ]; then
 		cd ..
 	else
 		for (( j=1; j<=$WIDTH; j++ ))
@@ -30,7 +30,7 @@ create_childs() {
 	DEPTH=$DEPTH+1
 }
 
-sudo mkdir sai
+/bin/mkdir sai
 cd sai
 create_sub_dir
 for (( k=1; k<=$WIDTH; k++ ))
