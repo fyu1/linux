@@ -508,9 +508,12 @@ static void get_cpumask_from_node_id(u32 node_id, cpumask_t *affinity)
 static int mpam_ris_get_affinity(struct mpam_msc *msc, cpumask_t *affinity,
 				 enum mpam_class_types type,
 				 struct mpam_class *class,
-				 struct mpam_component *comp)
+				 struct mpam_component *comp,
+				 bool *cpu_less)
 {
 	int err;
+
+	*cpu_less = false;
 
 	switch (type) {
 	case MPAM_CLASS_CACHE:
@@ -528,7 +531,17 @@ static int mpam_ris_get_affinity(struct mpam_msc *msc, cpumask_t *affinity,
 		break;
 	case MPAM_CLASS_MEMORY:
 		get_cpumask_from_node_id(comp->comp_id, affinity);
-		/* affinity may be empty for CPU-less memory nodes */
+		/*
+		 * A CPU-less memory node has no local CPUs. Borrow the CPUs that
+		 * can reach the MSC so the node still gets a resctrl domain, and
+		 * flag it so the borrowed mask is kept out of class->affinity.
+		 */
+		if (cpumask_empty(affinity)) {
+			dev_info(&msc->pdev->dev,
+				 "CPU-less numa node %u\n", comp->comp_id);
+			cpumask_copy(affinity, cpu_possible_mask);
+			*cpu_less = true;
+		}
 		break;
 	case MPAM_CLASS_UNKNOWN:
 		return 0;
@@ -582,7 +595,8 @@ static int mpam_ris_create_locked(struct mpam_msc *msc, u8 ris_idx,
 		return PTR_ERR(vmsc);
 	}
 
-	err = mpam_ris_get_affinity(msc, &ris->affinity, type, class, comp);
+	err = mpam_ris_get_affinity(msc, &ris->affinity, type, class, comp,
+				    &ris->cpu_less);
 	if (err) {
 		if (list_empty(&vmsc->ris))
 			mpam_vmsc_destroy(vmsc);
@@ -594,8 +608,24 @@ static int mpam_ris_create_locked(struct mpam_msc *msc, u8 ris_idx,
 	INIT_LIST_HEAD_RCU(&ris->vmsc_list);
 	ris->vmsc = vmsc;
 
+	/*
+	 * comp->affinity must include the borrowed mask for CPU-less nodes:
+	 * mpam_resctrl_online_cpu() matches CPUs against comp->affinity to
+	 * create per-component domains. Overlap between CPU-less and CPU-ful
+	 * components is expected; each match gets its own domain keyed by
+	 * comp->comp_id, not by first-match lookup.
+	 *
+	 * class->affinity is different: it tracks CPUs with a local MSC in
+	 * this class. A CPU-less node borrows the CPUs that can reach its MSC
+	 * (see mpam_ris_get_affinity()) only so that it gets a per-component
+	 * resctrl domain. Those CPUs already contribute to class->affinity
+	 * through their own CPU-ful node, so folding the borrowed mask in here
+	 * would let mpam_ris_destroy() later subtract CPUs that other live
+	 * nodes in the class still depend on.
+	 */
 	cpumask_or(&comp->affinity, &comp->affinity, &ris->affinity);
-	cpumask_or(&class->affinity, &class->affinity, &ris->affinity);
+	if (!ris->cpu_less)
+		cpumask_or(&class->affinity, &class->affinity, &ris->affinity);
 	list_add_rcu(&ris->vmsc_list, &vmsc->ris);
 	list_add_rcu(&ris->msc_list, &msc->ris);
 
@@ -612,11 +642,24 @@ static void mpam_ris_destroy(struct mpam_msc_ris *ris)
 	lockdep_assert_held(&mpam_list_lock);
 
 	/*
-	 * It is assumed affinities don't overlap. If they do the class becomes
-	 * unusable immediately.
+	 * A CPU-less node's borrowed affinity was deliberately never folded into
+	 * class->affinity (see mpam_ris_create_locked()), so it must not be
+	 * subtracted here: doing so would remove CPUs that other live nodes in
+	 * the class still rely on.
+	 *
+	 * Every RIS of a CPU-less component borrowed cpu_possible_mask masked by
+	 * its own msc->accessibility (see mpam_ris_get_affinity()), so these
+	 * borrowed masks overlap across sibling RIS. Such a mask must not be
+	 * subtracted from comp->affinity either: a component backed by more than
+	 * one MSC keeps a live sibling RIS after this one is destroyed, and
+	 * subtracting the overlapping mask would wrongly empty comp->affinity
+	 * while that sibling still needs it. The borrowed affinity is released
+	 * when the component itself is torn down.
 	 */
-	cpumask_andnot(&class->affinity, &class->affinity, &ris->affinity);
-	cpumask_andnot(&comp->affinity, &comp->affinity, &ris->affinity);
+	if (!ris->cpu_less) {
+		cpumask_andnot(&class->affinity, &class->affinity, &ris->affinity);
+		cpumask_andnot(&comp->affinity, &comp->affinity, &ris->affinity);
+	}
 	clear_bit(ris->ris_idx, &msc->ris_idxs);
 	list_del_rcu(&ris->msc_list);
 	list_del_rcu(&ris->vmsc_list);

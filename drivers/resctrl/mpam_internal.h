@@ -369,6 +369,14 @@ struct mpam_msc_ris {
 	struct mpam_props	props;
 	bool			in_reset_state;
 
+	/*
+	 * A CPU-less memory node has no CPUs of its own, so this RIS borrows the
+	 * CPUs that can reach its MSC (see mpam_ris_get_affinity()) purely so
+	 * the node still gets a resctrl domain. When set, the borrowed mask in
+	 * @affinity must not be folded into the owning class's affinity.
+	 */
+	bool			cpu_less;
+
 	cpumask_t		affinity;
 
 	/* member of mpam_vmsc:ris */
