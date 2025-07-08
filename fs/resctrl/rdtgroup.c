@@ -18,6 +18,7 @@
 #include <linux/fs_parser.h>
 #include <linux/sysfs.h>
 #include <linux/kernfs.h>
+#include <linux/memory_hotplug.h>
 #include <linux/once.h>
 #include <linux/resctrl.h>
 #include <linux/seq_buf.h>
@@ -3238,6 +3239,7 @@ struct rdtgroup *rdtgroup_kn_lock_live(struct kernfs_node *kn)
 	rdtgroup_kn_get(rdtgrp, kn);
 
 	cpus_read_lock();
+	get_online_mems();
 	mutex_lock(&rdtgroup_mutex);
 	rdt_last_cmd_clear();
 
@@ -3265,6 +3267,7 @@ void rdtgroup_kn_unlock(struct kernfs_node *kn)
 		return;
 
 	mutex_unlock(&rdtgroup_mutex);
+	put_online_mems();
 	cpus_read_unlock();
 
 	rdtgroup_kn_put(rdtgrp, kn);
@@ -3299,6 +3302,7 @@ bool info_kn_lock(struct kernfs_node *kn)
 {
 	kernfs_break_active_protection(kn);
 	cpus_read_lock();
+	get_online_mems();
 	mutex_lock(&rdtgroup_mutex);
 
 	/*
@@ -3307,6 +3311,7 @@ bool info_kn_lock(struct kernfs_node *kn)
 	 */
 	if (!rdtgroup_default.kn || !is_active_resctrl_node(kn)) {
 		mutex_unlock(&rdtgroup_mutex);
+		put_online_mems();
 		cpus_read_unlock();
 		kernfs_unbreak_active_protection(kn);
 		return false;
@@ -3318,6 +3323,7 @@ bool info_kn_lock(struct kernfs_node *kn)
 void info_kn_unlock(struct kernfs_node *kn)
 {
 	mutex_unlock(&rdtgroup_mutex);
+	put_online_mems();
 	cpus_read_unlock();
 	kernfs_unbreak_active_protection(kn);
 }
@@ -3671,6 +3677,7 @@ static void resctrl_unmount(void)
 	struct rdt_resource *r;
 
 	cpus_read_lock();
+	get_online_mems();
 	mutex_lock(&rdtgroup_mutex);
 
 	rdt_disable_ctx();
@@ -3686,6 +3693,7 @@ static void resctrl_unmount(void)
 		resctrl_arch_disable_mon();
 	resctrl_mounted = false;
 	mutex_unlock(&rdtgroup_mutex);
+	put_online_mems();
 	cpus_read_unlock();
 }
 
@@ -3701,6 +3709,7 @@ static int rdt_get_tree(struct fs_context *fc)
 	DO_ONCE_SLEEPABLE(resctrl_arch_pre_mount);
 
 	cpus_read_lock();
+	get_online_mems();
 	mutex_lock(&rdtgroup_mutex);
 	/*
 	 * resctrl file system can only be mounted once.
@@ -3804,6 +3813,7 @@ static int rdt_get_tree(struct fs_context *fc)
 
 	rdt_last_cmd_clear();
 	mutex_unlock(&rdtgroup_mutex);
+	put_online_mems();
 	cpus_read_unlock();
 
 	ret = kernfs_get_tree(fc);
@@ -3836,6 +3846,7 @@ out_root:
 	rdtgroup_destroy_root();
 out:
 	mutex_unlock(&rdtgroup_mutex);
+	put_online_mems();
 	cpus_read_unlock();
 	return ret;
 }
@@ -5502,12 +5513,14 @@ static bool resctrl_online_domains_exist(void)
 void resctrl_exit(void)
 {
 	cpus_read_lock();
+	get_online_mems();
 	WARN_ON_ONCE(resctrl_online_domains_exist());
 
 	mutex_lock(&rdtgroup_mutex);
 	resctrl_fs_teardown();
 	mutex_unlock(&rdtgroup_mutex);
 
+	put_online_mems();
 	cpus_read_unlock();
 
 	debugfs_remove_recursive(debugfs_resctrl);
