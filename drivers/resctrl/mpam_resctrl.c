@@ -11,6 +11,8 @@
 #include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/math.h>
+#include <linux/memory.h>
+#include <linux/node.h>
 #include <linux/printk.h>
 #include <linux/rculist.h>
 #include <linux/resctrl.h>
@@ -1681,16 +1683,25 @@ void resctrl_arch_reset_all_ctrls(struct rdt_resource *r)
 	mpam_reset_class_locked(res->class);
 }
 
+static void mpam_resctrl_domain_hdr_init_mask(const struct cpumask *cpus,
+					      int id_cpu,
+					      struct mpam_component *comp,
+					      enum resctrl_res_level rid,
+					      struct rdt_domain_hdr *hdr)
+{
+	INIT_LIST_HEAD(&hdr->list);
+	hdr->id = mpam_resctrl_pick_domain_id(id_cpu, comp);
+	hdr->rid = rid;
+	cpumask_copy(&hdr->cpu_mask, cpus);
+}
+
 static void mpam_resctrl_domain_hdr_init(int cpu, struct mpam_component *comp,
 					 enum resctrl_res_level rid,
 					 struct rdt_domain_hdr *hdr)
 {
 	lockdep_assert_cpus_held();
 
-	INIT_LIST_HEAD(&hdr->list);
-	hdr->id = mpam_resctrl_pick_domain_id(cpu, comp);
-	hdr->rid = rid;
-	cpumask_set_cpu(cpu, &hdr->cpu_mask);
+	mpam_resctrl_domain_hdr_init_mask(cpumask_of(cpu), cpu, comp, rid, hdr);
 }
 
 static void mpam_resctrl_online_domain_hdr(unsigned int cpu,
@@ -1711,12 +1722,12 @@ static void mpam_resctrl_online_domain_hdr(unsigned int cpu,
  * indicating the parent structure can be freed.
  * If there are other CPUs in the domain, returns false.
  */
-static bool mpam_resctrl_offline_domain_hdr(unsigned int cpu,
-					    struct rdt_domain_hdr *hdr)
+static bool mpam_resctrl_offline_domain_hdr_mask(const struct cpumask *cpus,
+						 struct rdt_domain_hdr *hdr)
 {
 	lockdep_assert_held(&domain_list_lock);
 
-	cpumask_clear_cpu(cpu, &hdr->cpu_mask);
+	cpumask_andnot(&hdr->cpu_mask, &hdr->cpu_mask, cpus);
 	if (cpumask_empty(&hdr->cpu_mask)) {
 		list_del_rcu(&hdr->list);
 		synchronize_rcu();
@@ -1724,6 +1735,12 @@ static bool mpam_resctrl_offline_domain_hdr(unsigned int cpu,
 	}
 
 	return false;
+}
+
+static bool mpam_resctrl_offline_domain_hdr(unsigned int cpu,
+					    struct rdt_domain_hdr *hdr)
+{
+	return mpam_resctrl_offline_domain_hdr_mask(cpumask_of(cpu), hdr);
 }
 
 static void mpam_resctrl_domain_insert(struct list_head *list,
@@ -1739,6 +1756,23 @@ static void mpam_resctrl_domain_insert(struct list_head *list,
 		return;
 
 	list_add_tail_rcu(&new->list, pos);
+}
+
+static struct mpam_component *find_component_nid(struct mpam_class *class, int nid)
+{
+	struct mpam_component *comp;
+
+	if (!class || class->type != MPAM_CLASS_MEMORY)
+		return NULL;
+
+	guard(srcu)(&mpam_srcu);
+	list_for_each_entry_srcu(comp, &class->components, class_list,
+				 srcu_read_lock_held(&mpam_srcu)) {
+		if (comp->comp_id == nid)
+			return comp;
+	}
+
+	return NULL;
 }
 
 static struct mpam_component *find_component(struct mpam_class *class, int cpu)
@@ -1925,6 +1959,275 @@ mpam_resctrl_get_ctrl_domain_from_cpu(int cpu, struct mpam_resctrl_res *res,
 	return NULL;
 }
 
+static bool mpam_mba_uses_memory_nid(void)
+{
+	struct mpam_resctrl_res *res = &mpam_resctrl_controls[RDT_RESOURCE_MBA];
+
+	return res->class && res->class->type == MPAM_CLASS_MEMORY;
+}
+
+static struct mpam_resctrl_dom *
+mpam_get_ctrl_domain_from_nid(int nid, struct mpam_resctrl_res *res,
+			      struct resctrl_ctrl *ctrl)
+{
+	struct mpam_resctrl_dom *dom;
+
+	list_for_each_entry(dom, &ctrl->domains, resctrl_ctrl_dom.hdr.list) {
+		if (!dom->ctrl_comp || !dom->ctrl_comp->class)
+			continue;
+		if (dom->ctrl_comp->class->type != MPAM_CLASS_MEMORY)
+			continue;
+		if (dom->ctrl_comp->comp_id == nid)
+			return dom;
+	}
+
+	return NULL;
+}
+
+static struct mpam_resctrl_dom *
+mpam_get_mon_domain_from_nid(int nid, struct mpam_resctrl_res *res)
+{
+	struct mpam_resctrl_dom *dom;
+	struct rdt_resource *r = &res->resctrl_res;
+
+	if (!r->mon_capable)
+		return NULL;
+
+	list_for_each_entry(dom, &r->mon_domains, resctrl_mon_dom.hdr.list) {
+		if (!dom->ctrl_comp || !dom->ctrl_comp->class)
+			continue;
+		if (dom->ctrl_comp->class->type != MPAM_CLASS_MEMORY)
+			continue;
+		if (dom->ctrl_comp->comp_id == nid)
+			return dom;
+	}
+
+	return NULL;
+}
+
+static struct mpam_resctrl_dom *
+mpam_resctrl_alloc_ctrl_domain_nid(int nid, struct mpam_resctrl_res *res,
+				   struct resctrl_ctrl *ctrl,
+				   struct mpam_component *comp)
+{
+	int err;
+	struct mpam_resctrl_dom *dom;
+	struct rdt_ctrl_domain *ctrl_d;
+	struct rdt_resource *r = &res->resctrl_res;
+	int id_cpu = cpumask_first(cpu_possible_mask);
+
+	if (id_cpu >= nr_cpu_ids)
+		id_cpu = 0;
+
+	lockdep_assert_held(&domain_list_lock);
+
+	if (!r->alloc_capable)
+		return ERR_PTR(-EINVAL);
+
+	if (WARN_ON_ONCE(!comp))
+		return ERR_PTR(-EINVAL);
+
+	dom = kzalloc_node(sizeof(*dom), GFP_KERNEL, nid);
+	if (!dom)
+		return ERR_PTR(-ENOMEM);
+
+	dom->ctrl_comp = comp;
+
+	ctrl_d = &dom->resctrl_ctrl_dom;
+	mpam_resctrl_domain_hdr_init_mask(cpu_possible_mask, id_cpu, comp,
+					  r->rid, &ctrl_d->hdr);
+	ctrl_d->hdr.type = RESCTRL_CTRL_DOMAIN;
+	err = resctrl_online_ctrl_domain(r, ctrl, ctrl_d);
+	if (err)
+		goto free_domain;
+
+	mpam_resctrl_domain_insert(&ctrl->domains, &ctrl_d->hdr);
+
+	return dom;
+
+free_domain:
+	kfree(dom);
+	return ERR_PTR(err);
+}
+
+static struct mpam_resctrl_dom *
+mpam_resctrl_alloc_mon_domain_nid(int nid, struct mpam_resctrl_res *res,
+				  struct mpam_component *comp)
+{
+	int err;
+	struct mpam_resctrl_dom *dom;
+	struct rdt_l3_mon_domain *mon_d;
+	struct rdt_resource *r = &res->resctrl_res;
+	struct mpam_component *any_mon_comp = NULL;
+	struct mpam_resctrl_mon *mon;
+	enum resctrl_event_id eventid;
+	int id_cpu = cpumask_first(cpu_possible_mask);
+
+	if (id_cpu >= nr_cpu_ids)
+		id_cpu = 0;
+
+	lockdep_assert_held(&domain_list_lock);
+
+	if (!r->mon_capable)
+		return ERR_PTR(-EINVAL);
+
+	if (WARN_ON_ONCE(!comp))
+		return ERR_PTR(-EINVAL);
+
+	dom = kzalloc_node(sizeof(*dom), GFP_KERNEL, nid);
+	if (!dom)
+		return ERR_PTR(-ENOMEM);
+
+	dom->ctrl_comp = comp;
+
+	for_each_mpam_resctrl_mon(mon, eventid) {
+		struct mpam_component *mon_comp;
+
+		if (!mon->class)
+			continue;
+
+		mon_comp = find_component_nid(mon->class, nid);
+		dom->mon_comp[eventid] = mon_comp;
+		if (mon_comp)
+			any_mon_comp = mon_comp;
+	}
+	if (!any_mon_comp) {
+		err = -EFAULT;
+		goto free_domain;
+	}
+
+	mon_d = &dom->resctrl_mon_dom;
+	mpam_resctrl_domain_hdr_init_mask(cpu_possible_mask, id_cpu, any_mon_comp,
+					  r->rid, &mon_d->hdr);
+	mon_d->hdr.type = RESCTRL_MON_DOMAIN;
+	err = resctrl_online_mon_domain(r, &mon_d->hdr);
+	if (err)
+		goto free_domain;
+
+	mpam_resctrl_domain_insert(&r->mon_domains, &mon_d->hdr);
+
+	return dom;
+
+free_domain:
+	kfree(dom);
+	return ERR_PTR(err);
+}
+
+static int mpam_resctrl_online_node(unsigned int nid)
+{
+	struct mpam_resctrl_res *res = &mpam_resctrl_controls[RDT_RESOURCE_MBA];
+	struct rdt_resource *r = &res->resctrl_res;
+	struct mpam_component *comp;
+	struct resctrl_ctrl *ctrl;
+	struct mpam_resctrl_dom *dom;
+
+	if (!res->class)
+		return 0;
+
+	comp = find_component_nid(res->class, nid);
+	if (!comp)
+		return 0;
+
+	guard(mutex)(&domain_list_lock);
+
+	if (r->alloc_capable) {
+		for_each_resource_ctrl(ctrl, r) {
+			dom = mpam_get_ctrl_domain_from_nid(nid, res, ctrl);
+			if (!dom) {
+				dom = mpam_resctrl_alloc_ctrl_domain_nid(nid, res,
+									 ctrl, comp);
+				if (IS_ERR(dom))
+					return PTR_ERR(dom);
+			}
+		}
+	}
+
+	if (r->mon_capable) {
+		dom = mpam_get_mon_domain_from_nid(nid, res);
+		if (!dom) {
+			dom = mpam_resctrl_alloc_mon_domain_nid(nid, res, comp);
+			if (IS_ERR(dom))
+				return PTR_ERR(dom);
+		}
+	}
+
+	return 0;
+}
+
+static int mpam_resctrl_offline_node(unsigned int nid)
+{
+	struct mpam_resctrl_res *res = &mpam_resctrl_controls[RDT_RESOURCE_MBA];
+	struct rdt_resource *r = &res->resctrl_res;
+	struct resctrl_ctrl *ctrl;
+	struct mpam_resctrl_dom *dom;
+	struct rdt_ctrl_domain *ctrl_d;
+	struct rdt_l3_mon_domain *mon_d;
+
+	if (!res->class)
+		return 0;
+
+	if (!find_component_nid(res->class, nid))
+		return 0;
+
+	guard(mutex)(&domain_list_lock);
+
+	if (r->alloc_capable) {
+		for_each_resource_ctrl(ctrl, r) {
+			dom = mpam_get_ctrl_domain_from_nid(nid, res, ctrl);
+			if (WARN_ON_ONCE(!dom))
+				continue;
+			ctrl_d = &dom->resctrl_ctrl_dom;
+			if (mpam_resctrl_offline_domain_hdr_mask(cpu_possible_mask,
+								 &ctrl_d->hdr)) {
+				resctrl_offline_ctrl_domain(r, ctrl, ctrl_d);
+				kfree(dom);
+			}
+		}
+	}
+
+	if (r->mon_capable) {
+		dom = mpam_get_mon_domain_from_nid(nid, res);
+		if (WARN_ON_ONCE(!dom))
+			return 0;
+		mon_d = &dom->resctrl_mon_dom;
+		if (mpam_resctrl_offline_domain_hdr_mask(cpu_possible_mask, &mon_d->hdr)) {
+			resctrl_offline_mon_domain(r, &mon_d->hdr);
+			kfree(dom);
+		}
+	}
+
+	return 0;
+}
+
+static int mpam_resctrl_node_notifier(struct notifier_block *self,
+				      unsigned long action, void *arg)
+{
+	struct node_notify *nn = arg;
+
+	if (nn->nid < 0 || !mpam_mba_uses_memory_nid())
+		return NOTIFY_OK;
+
+	/*
+	 * Ignore nids that have CPUs. Resctrl needs to see the cpu offline
+	 * call for each CPU to update the CPUs in control groups.
+	 */
+	if (!cpumask_empty(cpumask_of_node(nn->nid)))
+		return NOTIFY_OK;
+
+	switch (action) {
+	case NODE_ADDED_FIRST_MEMORY:
+		mpam_resctrl_online_node(nn->nid);
+		break;
+	case NODE_REMOVED_LAST_MEMORY:
+		mpam_resctrl_offline_node(nn->nid);
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
 int mpam_resctrl_online_cpu(unsigned int cpu)
 {
 	struct mpam_resctrl_res *res;
@@ -2087,6 +2390,10 @@ int mpam_resctrl_setup(void)
 			goto internal_error;
 		}
 	}
+
+	if (mpam_mba_uses_memory_nid())
+		hotplug_node_notifier(mpam_resctrl_node_notifier,
+				      RESCTRL_CALLBACK_PRI);
 
 	cpus_read_unlock();
 
