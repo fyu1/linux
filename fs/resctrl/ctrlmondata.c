@@ -62,6 +62,29 @@ static struct resctrl_ctrl_priv resctrl_ctrl_priv_all[] = {
 	},
 };
 
+static bool mb_maxhlm_validate(char *buf, u32 *data, struct rdt_resource *r,
+			       struct resctrl_ctrl *ctrl)
+{
+	int ret;
+	u32 mb_maxhlm;
+
+	ret = kstrtou32(buf, 10, &mb_maxhlm);
+	if (ret) {
+		rdt_last_cmd_printf("Invalid MB_MAXHLM value %s\n", buf);
+		return false;
+	}
+
+	if (mb_maxhlm != 0 && mb_maxhlm != 1) {
+		rdt_last_cmd_printf("MB_MAXHLM value %u isn't 0/1\n",
+				    mb_maxhlm);
+		return false;
+	}
+
+	*data = mb_maxhlm;
+
+	return true;
+}
+
 /*
  * Iterator finding enabled controls.
  * Dynamically traverses controls based on active control mode.
@@ -165,6 +188,17 @@ static int parse_bw(struct rdt_parse_data *data, struct rdt_resource_final *f,
 		return -EINVAL;
 	}
 
+	/* Parse mb_maxhlm line */
+	if (ctrl->name == RESCTRL_CTRL_NAME_MAXHLM) {
+		if (!mb_maxhlm_validate(data->buf, &bw_val, r, ctrl))
+			return -EINVAL;
+
+		cfg->new_ctrl = bw_val;
+		cfg->have_new_ctrl = true;
+		return 0;
+	}
+
+	/* Parse mb line */
 	if (!bw_validate(data->buf, &bw_val, r, ctrl))
 		return -EINVAL;
 
@@ -362,6 +396,7 @@ static const char * const resctrl_ctrl_name[] = {
 	[RESCTRL_CTRL_NAME_NODE]	= "NODE",
 	[RESCTRL_CTRL_NAME_REGION0_MIN]		= "REGION0_MIN",
 	[RESCTRL_CTRL_NAME_REGION0_MAX]		= "REGION0_MAX",
+	[RESCTRL_CTRL_NAME_MAXHLM]	= "MAXHLM",
 };
 
 const char *resctrl_ctrl_name_str(enum resctrl_ctrl_name name)

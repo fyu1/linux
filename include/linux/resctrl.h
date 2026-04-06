@@ -402,6 +402,7 @@ struct resctrl_mon {
  *				line is "MB_NODE".
  * @RESCTRL_CTRL_NAME_REGION0_MIN:	"REGION0_MIN"
  * @RESCTRL_CTRL_NAME_REGION0_MAX:	"REGION0_MAX"
+ * @RESCTRL_CTRL_NAME_MAXHLM:	"MAXHLM"
  */
 enum resctrl_ctrl_name {
 	RESCTRL_CTRL_NAME_DEF,
@@ -410,7 +411,8 @@ enum resctrl_ctrl_name {
 	RESCTRL_CTRL_NAME_NODE,
 	RESCTRL_CTRL_NAME_REGION0_MIN,
 	RESCTRL_CTRL_NAME_REGION0_MAX,
-	RESCTRL_CTRL_NAME_LAST = RESCTRL_CTRL_NAME_REGION0_MAX
+	RESCTRL_CTRL_NAME_MAXHLM,
+	RESCTRL_CTRL_NAME_LAST = RESCTRL_CTRL_NAME_MAXHLM
 };
 
 /**
@@ -616,6 +618,10 @@ static inline u32 resctrl_get_default_ctrlval(struct resctrl_ctrl *ctrl)
 		 */
 		return BIT_MASK(ctrl->bitmap.cbm_len) - 1;
 	case RESCTRL_CTRL_SCALAR:
+		/* The hard-limit toggle defaults to off. */
+		if (ctrl->name == RESCTRL_CTRL_NAME_MAXHLM)
+			return 0;
+
 		return ctrl->scalar.reset_val;
 	}
 

@@ -4401,6 +4401,19 @@ static void rdtgroup_init_mba(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 	}
 }
 
+/* Initialize the MB MAXHLM control with default hardlim off (0). */
+static void rdtgroup_init_mb_hlim(struct resctrl_ctrl *ctrl)
+{
+	struct resctrl_staged_config *cfg;
+	struct rdt_ctrl_domain *d;
+
+	list_for_each_entry(d, &ctrl->domains, hdr.list) {
+		cfg = &d->staged_config[CDP_NONE];
+		cfg->new_ctrl = 0;
+		cfg->have_new_ctrl = true;
+	}
+}
+
 /* Initialize the RDT group's allocations. */
 static int rdtgroup_init_alloc(struct rdtgroup *rdtgrp)
 {
@@ -4416,6 +4429,10 @@ static int rdtgroup_init_alloc(struct rdtgroup *rdtgrp)
 		for_each_enabled_ctrl(ctrl, r) {
 			if (r->rid == RDT_RESOURCE_MBA ||
 			    r->rid == RDT_RESOURCE_SMBA) {
+				if (ctrl->name == RESCTRL_CTRL_NAME_MAXHLM) {
+					rdtgroup_init_mb_hlim(ctrl);
+					continue;
+				}
 				rdtgroup_init_mba(r, ctrl, rdtgrp->closid);
 				if (is_mba_sc(r, ctrl))
 					continue;
