@@ -1198,6 +1198,34 @@ When MB domains are NUMA nodes::
 
 	MB_NODE:<node_id0>=bw_MiBps0;<node_id1>=bw_MiBps1;...
 
+MBW maximum hard limit (ARM MPAM)
+---------------------------------
+On some ARM systems, resctrl memory bandwidth allocation uses MPAM
+maximum bandwidth (MBW_MAX). When ``MPAMF_MBW_IDR.MAX_LIM`` is 0, an
+additional schemata line selects the ``HARDLIM`` bit for
+``MPAMCFG_MBW_MAX`` independently of the numeric limit on the bandwidth
+line (``MB`` or ``MB_NODE``).
+
+The line uses the same domain indices as the bandwidth line. On a
+cache MSC those indices are cache ids and the lines are ``MB`` and
+``MB_MAXHLM``. On a memory-level MSC those indices are NUMA node ids
+and the lines are ``MB_NODE`` and ``MB_MAXHLM_NODE``. Each hard-limit
+value must be ``0`` or ``1``: ``0`` clears HARDLIM (soft-limit behaviour
+for the max), ``1`` sets HARDLIM (hard limit). When ``MAX_LIM`` is
+nonzero or the platform does not support the hard-limit control, the
+line is omitted from ``schemata``.
+
+The control is listed under ``info/MB/schemata/`` as ``MB_MAXHLM`` or
+``MB_MAXHLM_NODE``.
+
+Format when MB domains are caches::
+
+	MB_MAXHLM:<cache_id0>=0|1;<cache_id1>=0|1;...
+
+Format when MB domains are NUMA nodes::
+
+	MB_MAXHLM_NODE:<node_id0>=0|1;<node_id1>=0|1;...
+
 Slow Memory Bandwidth Allocation (SMBA)
 ---------------------------------------
 AMD hardware supports Slow Memory Bandwidth Allocation (SMBA).
