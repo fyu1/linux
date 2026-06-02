@@ -89,9 +89,13 @@ allocation:
 		(for example ``MB`` and ``MB_NODE`` on MBA resources).
 
 		Each control subdirectory is read-only and contains ``scope``
-		and ``type`` files. Bandwidth (scalar) controls also expose a
-		``status`` file that reads ``enabled`` when the control is backed
-		by bandwidth-control hardware and ``disabled`` otherwise.
+		and ``type`` files. The ``scope`` file reads ``L3`` when the
+		control's domain identifiers are L3 cache IDs and ``NODE`` when
+		they are NUMA node IDs. This determines how to interpret numeric
+		IDs in the control's ``schemata`` line and in ``mon_NODE_XX``
+		directories under ``mon_data``. Bandwidth (scalar) controls also
+		expose a ``status`` file that reads ``enabled`` when the control
+		is backed by bandwidth-control hardware and ``disabled`` otherwise.
 
 		On resources that support control emulation (see "MBA control
 		emulation" below), this directory also contains a writable
@@ -656,6 +660,14 @@ When monitoring is enabled all MON groups will also contain:
 	each instance of an L3 cache. Each directory contains files for the enabled
 	L3 events (e.g. "llc_occupancy", "mbm_total_bytes", and "mbm_local_bytes").
 
+	On platforms where memory bandwidth monitoring is associated with the
+	MB resource (for example ARM MPAM systems with a memory-level MSC),
+	there will be a "mon_NODE_XX" directory for each MB monitor domain.
+	"XX" is the NUMA node id that also appears in the "MB:" line of
+	"schemata" when the MB control's ``scope`` reads ``NODE``. Each
+	"mon_NODE_XX" directory contains the MBM events enabled for that
+	resource (for example "mbm_total_bytes").
+
 	If telemetry monitoring is enabled, there will be a "mon_PERF_PKG_YY"
 	directory for each physical processor package. Each directory contains
 	files for the enabled telemetry events (e.g. "core_energy". "activity",
@@ -987,10 +999,26 @@ or
 Memory bandwidth Allocation (default mode)
 ------------------------------------------
 
-Memory b/w domain is L3 cache.
-::
+On most platforms the memory bandwidth (MBA) domain is the L3 cache and
+the numeric identifiers in the "MB:" line are L3 cache ids::
 
 	MB:<cache_id0>=bandwidth0;<cache_id1>=bandwidth1;...
+
+On ARM MPAM platforms backed by a memory-level MSC, the MB control's
+``scope`` reads ``NODE`` and the identifiers are NUMA node ids instead::
+
+	MB:<node_id0>=bandwidth0;<node_id1>=bandwidth1;...
+
+Example on a system where MB domains are NUMA nodes::
+
+	# cat /sys/fs/resctrl/info/MB/resource_schemata/MB/scope
+	NODE
+	# cat schemata
+	MB:0=100;1=100;2=100;10=100
+	L3:1=ffff;2=ffff
+
+Read the MB control's ``scope`` under ``info/MB/resource_schemata/`` before
+interpreting "MB:" entries in "schemata" or directory names under "mon_data".
 
 MBA control emulation
 ---------------------
@@ -1062,10 +1090,13 @@ configuration in each group's ``schemata`` file is unaffected.
 Memory bandwidth Allocation specified in MiBps
 ----------------------------------------------
 
-Memory bandwidth domain is L3 cache.
-::
+When MBA domains are L3 caches::
 
 	MB:<cache_id0>=bw_MiBps0;<cache_id1>=bw_MiBps1;...
+
+When the MB control's ``scope`` reads ``NODE``::
+
+	MB:<node_id0>=bw_MiBps0;<node_id1>=bw_MiBps1;...
 
 Slow Memory Bandwidth Allocation (SMBA)
 ---------------------------------------
