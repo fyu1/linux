@@ -285,6 +285,10 @@ properties. The name of the control is used in the "schemata" where user space
 can view and modify control settings or portions allocated to the control group
 as the control's properties allow.
 
+Numeric identifiers in a control's schemata line are that control's
+domain ids. The same ids are used by the matching monitor directories
+under ``mon_data`` (``mon_L3_XX`` or ``mon_NODE_XX``).
+
 For example, below shows MB, MB_MIN, and MB_MAX as controls for the "MB" resource.
 
 	 info/
@@ -816,6 +820,14 @@ When monitoring is enabled all MON groups will also contain:
 	each instance of an L3 cache. Each directory contains files for the enabled
 	L3 events (e.g. "llc_occupancy", "mbm_total_bytes", and "mbm_local_bytes").
 
+	On platforms where memory bandwidth monitoring is associated with the
+	MB resource (for example ARM MPAM systems with a memory-level MSC),
+	there will be a "mon_NODE_XX" directory for each MB monitor domain.
+	"XX" is the NUMA node id that also appears in the "MB_NODE:" line of
+	"schemata". Each "mon_NODE_XX"
+	directory contains the MBM events enabled for that resource (for
+	example "mbm_total_bytes").
+
 	If telemetry monitoring is enabled, there will be a "mon_PERF_PKG_YY"
 	directory for each physical processor package. Each directory contains
 	files for the enabled telemetry events (e.g. "core_energy". "activity",
@@ -1152,18 +1164,39 @@ or
 Memory bandwidth Allocation (default mode)
 ------------------------------------------
 
-Memory b/w domain is L3 cache.
-::
+On most platforms the memory bandwidth (MBA) domain is the L3 cache and
+the numeric identifiers in the "MB:" line are L3 cache ids::
 
 	MB:<cache_id0>=bandwidth0;<cache_id1>=bandwidth1;...
+
+On ARM MPAM platforms backed by a memory-level MSC, the schemata line is
+"MB_NODE:" in both legacy and native control_mode. info/MB/control_mode
+is legacy by default. The identifiers are NUMA node ids::
+
+	MB_NODE:<node_id0>=bandwidth0;<node_id1>=bandwidth1;...
+
+Platforms whose MB control is a cache MSC, and which have no CPU-less
+memory MSC, keep the "MB:" line in both modes.
+
+Example on a system where MB domains are NUMA nodes::
+
+	# cat schemata
+	MB_NODE:0=100;1=100;2=100;10=100
+	L3:1=ffff;2=ffff
+
+The same NUMA node ids appear as "mon_NODE_XX" directories under
+"mon_data".
 
 Memory bandwidth Allocation specified in MiBps
 ----------------------------------------------
 
-Memory bandwidth domain is L3 cache.
-::
+When MBA domains are L3 caches::
 
 	MB:<cache_id0>=bw_MiBps0;<cache_id1>=bw_MiBps1;...
+
+When MB domains are NUMA nodes::
+
+	MB_NODE:<node_id0>=bw_MiBps0;<node_id1>=bw_MiBps1;...
 
 Slow Memory Bandwidth Allocation (SMBA)
 ---------------------------------------
