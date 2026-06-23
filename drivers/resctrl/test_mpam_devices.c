@@ -382,9 +382,76 @@ static void test_mpam_reset_msc_bitmap(struct kunit *test)
 	mutex_unlock(&fake_msc.part_sel_lock);
 }
 
+static u32 find_cpuless_numa_node(void)
+{
+	int node;
+	cpumask_var_t tmp;
+
+	if (!alloc_cpumask_var(&tmp, GFP_KERNEL))
+		return UINT_MAX;
+
+	for (node = 0; node < nr_node_ids; node++) {
+		cpumask_clear(tmp);
+		get_cpumask_from_node_id(node, tmp);
+		if (cpumask_empty(tmp)) {
+			u32 ret = node;
+
+			free_cpumask_var(tmp);
+			return ret;
+		}
+	}
+
+	free_cpumask_var(tmp);
+	return UINT_MAX;
+}
+
+static void test_mpam_ris_cpuless_numa_affinity(struct kunit *test)
+{
+	cpumask_var_t affinity, expected;
+	bool cpu_less = false;
+	u32 node;
+	int err;
+
+	node = find_cpuless_numa_node();
+	if (node == UINT_MAX) {
+		kunit_skip(test, "No CPU-less NUMA node on this platform");
+		return;
+	}
+
+	if (!alloc_cpumask_var(&affinity, GFP_KERNEL) ||
+	    !alloc_cpumask_var(&expected, GFP_KERNEL)) {
+		free_cpumask_var(affinity);
+		free_cpumask_var(expected);
+		kunit_skip(test, "Failed to allocate cpumask");
+		return;
+	}
+
+	memset(&fake_msc1, 0, sizeof(fake_msc1));
+	fake_msc1.pdev = &fake_pdev;
+	cpumask_copy(&fake_msc1.accessibility, cpu_possible_mask);
+
+	fake_class.level = 3;
+	fake_class.type = MPAM_CLASS_MEMORY;
+	fake_comp1.comp_id = node;
+
+	cpumask_clear(affinity);
+	err = mpam_ris_get_affinity(&fake_msc1, affinity, MPAM_CLASS_MEMORY,
+				    &fake_class, &fake_comp1, &cpu_less);
+	KUNIT_EXPECT_EQ(test, err, 0);
+	KUNIT_EXPECT_TRUE(test, cpu_less);
+
+	cpumask_copy(expected, cpu_possible_mask);
+	cpumask_and(expected, expected, &fake_msc1.accessibility);
+	KUNIT_EXPECT_TRUE(test, cpumask_equal(affinity, expected));
+
+	free_cpumask_var(affinity);
+	free_cpumask_var(expected);
+}
+
 static struct kunit_case mpam_devices_test_cases[] = {
 	KUNIT_CASE(test_mpam_reset_msc_bitmap),
 	KUNIT_CASE(test_mpam_enable_merge_features),
+	KUNIT_CASE(test_mpam_ris_cpuless_numa_affinity),
 	KUNIT_CASE(test__props_mismatch),
 	{}
 };
