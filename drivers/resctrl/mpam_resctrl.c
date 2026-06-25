@@ -1942,6 +1942,7 @@ int mpam_resctrl_setup(void)
 
 	cpus_read_lock();
 	for_each_mpam_resctrl_control(res, rid) {
+		INIT_LIST_HEAD(&res->resctrl_res.controls);
 		INIT_LIST_HEAD_RCU(&res->resctrl_res.mon_domains);
 		res->resctrl_res.rid = rid;
 	}
