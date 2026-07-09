@@ -1266,10 +1266,14 @@ void resctrl_arch_config_cntr(struct rdt_resource *r, struct rdt_l3_mon_domain *
 	resctrl_arch_reset_cntr(r, d, closid, rmid, cntr_id, evtid);
 }
 
-static void _mpam_resctrl_ctrl_init_mba(struct mpam_resctrl_ctrl *mpam_ctrl,
+static void _mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
+					struct mpam_resctrl_ctrl *mpam_ctrl,
 					struct mpam_props *cprops,
 					enum resctrl_ctrl_name name)
 {
+	struct mpam_resctrl_res *res;
+	struct mpam_class *class;
+
 	mpam_ctrl->r_ctrl.type = RESCTRL_CTRL_SCALAR;
 	mpam_ctrl->r_ctrl.name = name;
 	INIT_LIST_HEAD_RCU(&mpam_ctrl->r_ctrl.domains);
@@ -1287,6 +1291,35 @@ static void _mpam_resctrl_ctrl_init_mba(struct mpam_resctrl_ctrl *mpam_ctrl,
 	mpam_ctrl->r_ctrl.scalar.gran = get_mba_granularity(cprops);
 
 	__set_bit(RESCTRL_SCALAR_FLAG_LINEAR, mpam_ctrl->r_ctrl.scalar.flags);
+
+	/*
+	 * The hard-limit control is a 0/1 HARDLIM toggle. It must not
+	 * inherit the bandwidth percentage range.
+	 */
+	if (resctrl_ctrl_maxhlm(&mpam_ctrl->r_ctrl)) {
+		mpam_ctrl->r_ctrl.scalar.min = 0;
+		mpam_ctrl->r_ctrl.scalar.max = 1;
+		mpam_ctrl->r_ctrl.scalar.reset_val = 0;
+		mpam_ctrl->r_ctrl.scalar.gran = 1;
+	}
+
+	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
+	class = res->class;
+	if (mpam_class_memory(class))
+		r->ctrl_scope = RESCTRL_NODE;
+}
+
+static enum resctrl_ctrl_name get_ctrl_name_maxhlm(struct rdt_resource *r)
+{
+	struct mpam_resctrl_res *res;
+	struct mpam_class *class;
+
+	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
+	class = res->class;
+	if (mpam_class_memory(class))
+		return RESCTRL_CTRL_NAME_MAXHLM_NODE;
+
+	return RESCTRL_CTRL_NAME_MAXHLM;
 }
 
 static int mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
@@ -1305,10 +1338,10 @@ static int mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
 	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
 	class = res->class;
 	if (mpam_class_memory(class)) {
-		_mpam_resctrl_ctrl_init_mba(mpam_ctrl, cprops,
+		_mpam_resctrl_ctrl_init_mba(r, mpam_ctrl, cprops,
 					    RESCTRL_CTRL_NAME_NODE);
 	} else {
-		_mpam_resctrl_ctrl_init_mba(mpam_ctrl, cprops,
+		_mpam_resctrl_ctrl_init_mba(r, mpam_ctrl, cprops,
 					    RESCTRL_CTRL_NAME_DEF);
 	}
 
@@ -1318,14 +1351,16 @@ static int mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
 	 * this fails.
 	 */
 	if (mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, cprops)) {
+		enum resctrl_ctrl_name name;
+
 		ctrl_maxhlm = kzalloc_obj(*ctrl_maxhlm);
 		if (!ctrl_maxhlm) {
 			kfree(mpam_ctrl);
 			return -ENOMEM;
 		}
 
-		_mpam_resctrl_ctrl_init_mba(ctrl_maxhlm, cprops,
-					    RESCTRL_CTRL_NAME_MAXHLM);
+		name = get_ctrl_name_maxhlm(r);
+		_mpam_resctrl_ctrl_init_mba(r, ctrl_maxhlm, cprops, name);
 	}
 
 	/*
@@ -1588,6 +1623,7 @@ u32 resctrl_arch_get_config(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 				configured_by = mpam_feat_mbw_max;
 			break;
 		case RESCTRL_CTRL_NAME_MAXHLM:
+		case RESCTRL_CTRL_NAME_MAXHLM_NODE:
 			configured_by = mpam_feat_mbw_max_hardlim_rw;
 			break;
 		default:
@@ -1671,6 +1707,7 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 			}
 			return -EINVAL;
 		case RESCTRL_CTRL_NAME_MAXHLM:
+		case RESCTRL_CTRL_NAME_MAXHLM_NODE:
 			if (mpam_has_feature(mpam_feat_mbw_max_hardlim_rw, cprops) &&
 			    mpam_has_feature(mpam_feat_mbw_max, cprops)) {
 				/*

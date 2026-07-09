@@ -189,7 +189,7 @@ static int parse_bw(struct rdt_parse_data *data, struct rdt_resource_final *f,
 	}
 
 	/* Parse mb_maxhlm line */
-	if (ctrl->name == RESCTRL_CTRL_NAME_MAXHLM) {
+	if (resctrl_ctrl_maxhlm(ctrl)) {
 		if (!mb_maxhlm_validate(data->buf, &bw_val, r, ctrl))
 			return -EINVAL;
 
@@ -397,6 +397,7 @@ static const char * const resctrl_ctrl_name[] = {
 	[RESCTRL_CTRL_NAME_REGION0_MIN]		= "REGION0_MIN",
 	[RESCTRL_CTRL_NAME_REGION0_MAX]		= "REGION0_MAX",
 	[RESCTRL_CTRL_NAME_MAXHLM]	= "MAXHLM",
+	[RESCTRL_CTRL_NAME_MAXHLM_NODE]	= "MAXHLM_NODE",
 };
 
 const char *resctrl_ctrl_name_str(enum resctrl_ctrl_name name)

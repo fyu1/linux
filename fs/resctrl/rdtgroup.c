@@ -4429,7 +4429,7 @@ static int rdtgroup_init_alloc(struct rdtgroup *rdtgrp)
 		for_each_enabled_ctrl(ctrl, r) {
 			if (r->rid == RDT_RESOURCE_MBA ||
 			    r->rid == RDT_RESOURCE_SMBA) {
-				if (ctrl->name == RESCTRL_CTRL_NAME_MAXHLM) {
+				if (resctrl_ctrl_maxhlm(ctrl)) {
 					rdtgroup_init_mb_hlim(ctrl);
 					continue;
 				}
