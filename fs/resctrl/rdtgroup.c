@@ -134,7 +134,8 @@ void rdt_staged_configs_clear(void)
 static bool resctrl_is_mbm_enabled(void)
 {
 	return (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID) ||
-		resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID));
+		resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID) ||
+		resctrl_is_mon_event_enabled(QOS_NODE_MBM_TOTAL_EVENT_ID));
 }
 
 /*
@@ -1929,7 +1930,7 @@ static int mbm_total_bytes_config_show(struct kernfs_open_file *of,
 	if (!info_kn_lock(of->kn))
 		return -ENOENT;
 
-	mbm_config_show(seq, r, QOS_L3_MBM_TOTAL_EVENT_ID);
+	mbm_config_show(seq, r, resctrl_mbm_total_event_id());
 
 	info_kn_unlock(of->kn);
 	return 0;
@@ -2053,7 +2054,7 @@ static ssize_t mbm_total_bytes_config_write(struct kernfs_open_file *of,
 
 	buf[nbytes - 1] = '\0';
 
-	ret = mon_config_write(r, buf, QOS_L3_MBM_TOTAL_EVENT_ID);
+	ret = mon_config_write(r, buf, resctrl_mbm_total_event_id());
 
 out_unlock:
 	info_kn_unlock(of->kn);
@@ -5317,10 +5318,39 @@ static struct rdt_l3_mon_domain *get_mon_domain_from_cpu(int cpu,
 	return NULL;
 }
 
+/* rdtgroup_mutex must be held when this helper is called. */
+static void resctrl_migrate_mon_domain_workers(unsigned int cpu,
+					       struct rdt_resource *r)
+{
+	struct rdt_l3_mon_domain *d;
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	if (!r->mon_capable)
+		return;
+
+	d = get_mon_domain_from_cpu(cpu, r);
+	if (!d)
+		return;
+
+	if (resctrl_is_mbm_enabled() && cpu == d->mbm_work_cpu) {
+		mutex_unlock(&rdtgroup_mutex);
+		cancel_delayed_work_sync(&d->mbm_over);
+		mutex_lock(&rdtgroup_mutex);
+		mbm_setup_overflow_handler(d, 0, cpu);
+	}
+	if (r->rid == RDT_RESOURCE_L3 &&
+	    resctrl_is_mon_event_enabled(QOS_L3_OCCUP_EVENT_ID) &&
+	    cpu == d->cqm_work_cpu && has_busy_rmid(d)) {
+		mutex_unlock(&rdtgroup_mutex);
+		cancel_delayed_work_sync(&d->cqm_limbo);
+		mutex_lock(&rdtgroup_mutex);
+		cqm_setup_limbo_handler(d, 0, cpu);
+	}
+}
+
 void resctrl_offline_cpu(unsigned int cpu)
 {
-	struct rdt_resource *l3 = resctrl_arch_get_resource(RDT_RESOURCE_L3);
-	struct rdt_l3_mon_domain *d;
 	struct rdtgroup *rdtgrp;
 
 	mutex_lock(&rdtgroup_mutex);
@@ -5331,27 +5361,11 @@ void resctrl_offline_cpu(unsigned int cpu)
 		}
 	}
 
-	if (!l3->mon_capable)
-		goto out_unlock;
+	resctrl_migrate_mon_domain_workers(cpu,
+					   resctrl_arch_get_resource(RDT_RESOURCE_L3));
+	resctrl_migrate_mon_domain_workers(cpu,
+					   resctrl_arch_get_resource(RDT_RESOURCE_MBA));
 
-	d = get_mon_domain_from_cpu(cpu, l3);
-	if (d) {
-		if (resctrl_is_mbm_enabled() && cpu == d->mbm_work_cpu) {
-			mutex_unlock(&rdtgroup_mutex);
-			cancel_delayed_work_sync(&d->mbm_over);
-			mutex_lock(&rdtgroup_mutex);
-			mbm_setup_overflow_handler(d, 0, cpu);
-		}
-		if (resctrl_is_mon_event_enabled(QOS_L3_OCCUP_EVENT_ID) &&
-		    cpu == d->cqm_work_cpu && has_busy_rmid(d)) {
-			mutex_unlock(&rdtgroup_mutex);
-			cancel_delayed_work_sync(&d->cqm_limbo);
-			mutex_lock(&rdtgroup_mutex);
-			cqm_setup_limbo_handler(d, 0, cpu);
-		}
-	}
-
-out_unlock:
 	mutex_unlock(&rdtgroup_mutex);
 }
 
