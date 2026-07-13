@@ -790,11 +790,15 @@ static void mbm_update(struct rdt_resource *r, struct rdt_l3_mon_domain *d,
 	 * This is protected from concurrent reads from user as both
 	 * the user and overflow handler hold the global mutex.
 	 */
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
-		mbm_update_one_event(r, d, rdtgrp, QOS_L3_MBM_TOTAL_EVENT_ID);
+	struct mon_evt *mevt;
 
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
-		mbm_update_one_event(r, d, rdtgrp, QOS_L3_MBM_LOCAL_EVENT_ID);
+	for_each_mon_event(mevt) {
+		if (mevt->rid != r->rid || !mevt->enabled ||
+		    !resctrl_is_mbm_event(mevt->evtid))
+			continue;
+
+		mbm_update_one_event(r, d, rdtgrp, mevt->evtid);
+	}
 }
 
 /*
@@ -863,8 +867,8 @@ void mbm_handle_overflow(struct work_struct *work)
 	if (!resctrl_mounted || !resctrl_arch_mon_capable())
 		goto out_unlock;
 
-	r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
 	d = container_of(work, struct rdt_l3_mon_domain, mbm_over.work);
+	r = resctrl_arch_get_resource(d->hdr.rid);
 
 	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
 		mbm_update(r, d, prgrp);
@@ -873,7 +877,7 @@ void mbm_handle_overflow(struct work_struct *work)
 		list_for_each_entry(crgrp, head, mon.crdtgrp_list)
 			mbm_update(r, d, crgrp);
 
-		if (is_mba_sc(NULL, NULL))
+		if (is_mba_sc(NULL, NULL) && r->rid == RDT_RESOURCE_L3)
 			update_mba_bw(prgrp, d);
 	}
 
@@ -1267,19 +1271,20 @@ static int rdtgroup_assign_cntr_event(struct rdt_l3_mon_domain *d, struct rdtgro
  */
 void rdtgroup_assign_cntrs(struct rdtgroup *rdtgrp)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	struct rdt_resource *r;
+	struct mon_evt *mevt;
 
-	if (!r->mon_capable || !resctrl_arch_mbm_cntr_assign_enabled(r) ||
-	    !r->mon.mbm_assign_on_mkdir)
-		return;
+	for_each_mon_event(mevt) {
+		if (!mevt->enabled || !resctrl_is_mbm_event(mevt->evtid))
+			continue;
 
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
-		rdtgroup_assign_cntr_event(NULL, rdtgrp,
-					   &mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID]);
+		r = resctrl_arch_get_resource(mevt->rid);
+		if (!r->mon_capable || !resctrl_arch_mbm_cntr_assign_enabled(r) ||
+		    !r->mon.mbm_assign_on_mkdir)
+			continue;
 
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
-		rdtgroup_assign_cntr_event(NULL, rdtgrp,
-					   &mon_event_all[QOS_L3_MBM_LOCAL_EVENT_ID]);
+		rdtgroup_assign_cntr_event(NULL, rdtgrp, mevt);
+	}
 }
 
 /*
@@ -1326,18 +1331,19 @@ static void rdtgroup_unassign_cntr_event(struct rdt_l3_mon_domain *d, struct rdt
  */
 void rdtgroup_unassign_cntrs(struct rdtgroup *rdtgrp)
 {
-	struct rdt_resource *r = resctrl_arch_get_resource(RDT_RESOURCE_L3);
+	struct rdt_resource *r;
+	struct mon_evt *mevt;
 
-	if (!r->mon_capable || !resctrl_arch_mbm_cntr_assign_enabled(r))
-		return;
+	for_each_mon_event(mevt) {
+		if (!mevt->enabled || !resctrl_is_mbm_event(mevt->evtid))
+			continue;
 
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
-		rdtgroup_unassign_cntr_event(NULL, rdtgrp,
-					     &mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID]);
+		r = resctrl_arch_get_resource(mevt->rid);
+		if (!r->mon_capable || !resctrl_arch_mbm_cntr_assign_enabled(r))
+			continue;
 
-	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
-		rdtgroup_unassign_cntr_event(NULL, rdtgrp,
-					     &mon_event_all[QOS_L3_MBM_LOCAL_EVENT_ID]);
+		rdtgroup_unassign_cntr_event(NULL, rdtgrp, mevt);
+	}
 }
 
 static int resctrl_parse_mem_transactions(char *tok, u32 *val)
@@ -1497,6 +1503,7 @@ ssize_t resctrl_mbm_assign_mode_write(struct kernfs_open_file *of, char *buf,
 {
 	struct rdt_resource *r = rdt_kn_parent_priv(of->kn);
 	struct rdt_l3_mon_domain *d;
+	struct mon_evt *mevt;
 	int ret = 0;
 	bool enable;
 
@@ -1548,13 +1555,19 @@ ssize_t resctrl_mbm_assign_mode_write(struct kernfs_open_file *of, char *buf,
 		 * Initialize the default memory transaction values for
 		 * total and local events.
 		 */
-		if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
-			mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID].evt_cfg = r->mon.mbm_cfg_mask;
-		if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
-			mon_event_all[QOS_L3_MBM_LOCAL_EVENT_ID].evt_cfg = r->mon.mbm_cfg_mask &
-									   (READS_TO_LOCAL_MEM |
-									    READS_TO_LOCAL_S_MEM |
-									    NON_TEMP_WRITE_TO_LOCAL_MEM);
+		for_each_mon_event(mevt) {
+			if (mevt->rid != r->rid || !mevt->enabled ||
+			    !resctrl_is_mbm_event(mevt->evtid))
+				continue;
+
+			if (mevt->evtid == QOS_L3_MBM_LOCAL_EVENT_ID)
+				mevt->evt_cfg = r->mon.mbm_cfg_mask &
+						(READS_TO_LOCAL_MEM |
+						 READS_TO_LOCAL_S_MEM |
+						 NON_TEMP_WRITE_TO_LOCAL_MEM);
+			else
+				mevt->evt_cfg = r->mon.mbm_cfg_mask;
+		}
 		/* Enable auto assignment when switching to "mbm_event" mode */
 		if (enable)
 			r->mon.mbm_assign_on_mkdir = true;
@@ -1896,12 +1909,18 @@ static void closid_num_dirty_rmid_free(void)
 
 static void resctrl_mon_resource_init(struct rdt_resource *r)
 {
+	struct mon_evt *mevt;
 	unsigned long fflags;
 
 	fflags = (r->rid == RDT_RESOURCE_MBA) ? RFTYPE_RES_MB : RFTYPE_RES_CACHE;
 
 	if (resctrl_arch_is_evt_configurable(QOS_L3_MBM_TOTAL_EVENT_ID)) {
 		mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID].configurable = true;
+		resctrl_file_fflags_init("mbm_total_bytes_config",
+					 RFTYPE_MON_INFO | fflags);
+	}
+	if (resctrl_arch_is_evt_configurable(QOS_NODE_MBM_TOTAL_EVENT_ID)) {
+		mon_event_all[QOS_NODE_MBM_TOTAL_EVENT_ID].configurable = true;
 		resctrl_file_fflags_init("mbm_total_bytes_config",
 					 RFTYPE_MON_INFO | fflags);
 	}
@@ -1913,17 +1932,25 @@ static void resctrl_mon_resource_init(struct rdt_resource *r)
 
 	if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
 		mba_mbps_default_event = QOS_L3_MBM_LOCAL_EVENT_ID;
+	else if (resctrl_is_mon_event_enabled(QOS_NODE_MBM_TOTAL_EVENT_ID))
+		mba_mbps_default_event = QOS_NODE_MBM_TOTAL_EVENT_ID;
 	else if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
 		mba_mbps_default_event = QOS_L3_MBM_TOTAL_EVENT_ID;
 
 	if (r->mon.mbm_cntr_assignable) {
-		if (resctrl_is_mon_event_enabled(QOS_L3_MBM_TOTAL_EVENT_ID))
-			mon_event_all[QOS_L3_MBM_TOTAL_EVENT_ID].evt_cfg = r->mon.mbm_cfg_mask;
-		if (resctrl_is_mon_event_enabled(QOS_L3_MBM_LOCAL_EVENT_ID))
-			mon_event_all[QOS_L3_MBM_LOCAL_EVENT_ID].evt_cfg = r->mon.mbm_cfg_mask &
-									   (READS_TO_LOCAL_MEM |
-									    READS_TO_LOCAL_S_MEM |
-									    NON_TEMP_WRITE_TO_LOCAL_MEM);
+		for_each_mon_event(mevt) {
+			if (mevt->rid != r->rid || !mevt->enabled ||
+			    !resctrl_is_mbm_event(mevt->evtid))
+				continue;
+
+			if (mevt->evtid == QOS_L3_MBM_LOCAL_EVENT_ID)
+				mevt->evt_cfg = r->mon.mbm_cfg_mask &
+						(READS_TO_LOCAL_MEM |
+						 READS_TO_LOCAL_S_MEM |
+						 NON_TEMP_WRITE_TO_LOCAL_MEM);
+			else
+				mevt->evt_cfg = r->mon.mbm_cfg_mask;
+		}
 		r->mon.mbm_assign_on_mkdir = true;
 		resctrl_file_fflags_init("num_mbm_cntrs",
 					 RFTYPE_MON_INFO | fflags);
