@@ -289,6 +289,9 @@ enum resctrl_ctrl_mode {
  *			"all" for a proportional schema. Base unit of an
  *			absolute control, for example "GBps".
  * @mba_sc:		True if MBA software controller(mba_sc) is enabled
+ * @no_mbw_hw:		True if the control has no MBW (mbw_max) hardware of its
+ *			own. Defaults to false (hardware-backed); architectures
+ *			set this for emulated controls that lack hardware.
  *
  * With a control value "C" written to the schemata file, min_bw <= C <= max_bw,
  * the amount of resource allocated by this control is:
@@ -303,6 +306,7 @@ struct resctrl_membw {
 	u32				scale;
 	enum resctrl_ctrl_unit		unit;
 	bool				mba_sc;
+	bool				no_mbw_hw;
 };
 
 enum resctrl_scope {

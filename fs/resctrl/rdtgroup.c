@@ -2318,6 +2318,16 @@ static int resctrl_ctrl_unit_show(struct kernfs_open_file *of,
 	return 0;
 }
 
+static int resctrl_ctrl_status_show(struct kernfs_open_file *of,
+				    struct seq_file *seq, void *v)
+{
+	struct resctrl_ctrl *ctrl = rdt_kn_parent_priv(of->kn);
+
+	seq_printf(seq, "%s\n", ctrl->membw.no_mbw_hw ? "disabled" : "enabled");
+
+	return 0;
+}
+
 static struct rftype ctrl_files[] = {
 	{
 		.name		= "scope",
@@ -2373,6 +2383,13 @@ static struct rftype ctrl_files[] = {
 		.mode		= 0444,
 		.kf_ops		= &rdtgroup_kf_single_ops,
 		.seq_show	= resctrl_ctrl_unit_show,
+		.fflags		= BIT(RESCTRL_CTRL_SCALAR),
+	},
+	{
+		.name		= "status",
+		.mode		= 0444,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= resctrl_ctrl_status_show,
 		.fflags		= BIT(RESCTRL_CTRL_SCALAR),
 	},
 };
