@@ -304,6 +304,7 @@ static const char * const resctrl_ctrl_name[] = {
 	[RESCTRL_CTRL_NAME_DEF]		= "",
 	[RESCTRL_CTRL_NAME_MIN]		= "MIN",
 	[RESCTRL_CTRL_NAME_MAX]		= "MAX",
+	[RESCTRL_CTRL_NAME_NODE]	= "NODE",
 };
 
 const char *resctrl_ctrl_name_str(enum resctrl_ctrl_name name)

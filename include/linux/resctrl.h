@@ -362,12 +362,14 @@ struct resctrl_mon {
  *				has the same name as the resource.
  * @RESCTRL_CTRL_NAME_MIN:	"MIN"
  * @RESCTRL_CTRL_NAME_MAX:	"MAX"
+ * @RESCTRL_CTRL_NAME_NODE:	"NODE"
  */
 enum resctrl_ctrl_name {
 	RESCTRL_CTRL_NAME_DEF,
 	RESCTRL_CTRL_NAME_MIN,
 	RESCTRL_CTRL_NAME_MAX,
-	RESCTRL_CTRL_NAME_LAST = RESCTRL_CTRL_NAME_MAX
+	RESCTRL_CTRL_NAME_NODE,
+	RESCTRL_CTRL_NAME_LAST = RESCTRL_CTRL_NAME_NODE
 };
 
 /**
@@ -383,6 +385,8 @@ enum resctrl_ctrl_name {
  *		Specifically, "rdt_resource_final::name"_"resctrl_ctrl::name".
  *		For example, with resource name "MB" and control name "MAX" the
  *		schema entry will be "MB_MAX".
+ * @emulated_by: For an emulated control, points at the control that emulates
+ *		it; NULL if this control is not emulated.
  * @cache:	Cache allocation control properties.
  * @membw:	Bandwidth control properties.
  */
@@ -392,6 +396,7 @@ struct resctrl_ctrl {
 	struct list_head	domains;
 	enum resctrl_ctrl_type	type;
 	enum resctrl_ctrl_name	name;
+	struct resctrl_ctrl	*emulated_by;
 	union {
 		struct resctrl_cache	cache;
 		struct resctrl_membw	membw;

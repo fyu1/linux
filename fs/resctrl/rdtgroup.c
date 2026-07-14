@@ -2781,6 +2781,26 @@ error:
 	return ret;
 }
 
+static int resctrl_ctrl_create_subdir(struct kernfs_node *kn_dir,
+				      struct rdt_resource_final *f,
+				      struct resctrl_ctrl *ctrl, struct kernfs_node **kn_ctrl)
+{
+	char ctrl_full_name[20];
+	int ret;
+
+	ret = snprintf(ctrl_full_name, sizeof(ctrl_full_name), "%s%s%s",
+		       f->name, resctrl_ctrl_is_default(ctrl) ? "" : "_",
+		       resctrl_ctrl_is_default(ctrl) ? "" : resctrl_ctrl_name_str(ctrl->name));
+	if (ret >= sizeof(ctrl_full_name))
+		return -ENOSPC;
+
+	*kn_ctrl = kernfs_create_dir(kn_dir, ctrl_full_name, kn_dir->mode, ctrl);
+	if (IS_ERR(*kn_ctrl))
+		return PTR_ERR(*kn_ctrl);
+
+	return rdtgroup_kn_set_ugid(*kn_ctrl);
+}
+
 /*
  * No need to cleanup on exit - caller calls the recursive kernfs_remove()
  * on failure.
@@ -2788,10 +2808,9 @@ error:
 static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
 				      struct rdt_resource_final *f)
 {
-	struct kernfs_node *kn_subdir, *kn_ctrl;
+	struct kernfs_node *kn_subdir, *kn_ctrl, *kn_ctrl_def = NULL;
+	struct resctrl_ctrl *ctrl, *ctrl_def = NULL;
 	struct rdt_resource *r = f->res;
-	struct resctrl_ctrl *ctrl;
-	char ctrl_full_name[20];
 	int ret;
 
 	kn_subdir = kernfs_create_dir(kn, "resource_schemata", kn->mode, f);
@@ -2808,19 +2827,41 @@ static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
 			return ret;
 	}
 
+	/*
+	 * Create the default control sub-dir first. Emulated controls are
+	 * nested underneath it and may be iterated before it, so it has to
+	 * exist before the rest of the controls are created.
+	 */
 	for_each_resource_ctrl(ctrl, f->res) {
-		ret = snprintf(ctrl_full_name, sizeof(ctrl_full_name), "%s%s%s",
-			       f->name, resctrl_ctrl_is_default(ctrl) ? "" : "_",
-			       resctrl_ctrl_is_default(ctrl) ? "" : resctrl_ctrl_name_str(ctrl->name));
-		if (ret >= sizeof(ctrl_full_name))
-			return -ENOSPC;
+		if (ctrl->name != RESCTRL_CTRL_NAME_DEF)
+			continue;
 
-		kn_ctrl = kernfs_create_dir(kn_subdir, ctrl_full_name, kn_subdir->mode,
-					    ctrl);
-		if (IS_ERR(kn_ctrl))
-			return PTR_ERR(kn_ctrl);
+		ret = resctrl_ctrl_create_subdir(kn_subdir, f, ctrl, &kn_ctrl_def);
+		if (ret)
+			return ret;
+		ret = resctrl_add_ctrl_files(kn_ctrl_def, ctrl);
+		if (ret)
+			return ret;
+		ctrl_def = ctrl;
+		break;
+	}
 
-		ret = rdtgroup_kn_set_ugid(kn_ctrl);
+	for_each_resource_ctrl(ctrl, f->res) {
+		if (ctrl->name == RESCTRL_CTRL_NAME_DEF)
+			continue;
+
+		/*
+		 * In legacy mode the emulating control is nested under the
+		 * default control it emulates (the default control's
+		 * emulated_by points at it). In native mode there is no
+		 * emulation, so every control sits directly under
+		 * resource_schemata.
+		 */
+		if (r->mode == RESCTRL_CTRL_LEGACY &&
+		    ctrl_def && ctrl_def->emulated_by == ctrl)
+			ret = resctrl_ctrl_create_subdir(kn_ctrl_def, f, ctrl, &kn_ctrl);
+		else
+			ret = resctrl_ctrl_create_subdir(kn_subdir, f, ctrl, &kn_ctrl);
 		if (ret)
 			return ret;
 
