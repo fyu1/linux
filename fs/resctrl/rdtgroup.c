@@ -2696,6 +2696,74 @@ static unsigned long fflags_from_resource(struct rdt_resource *r)
 	return WARN_ON_ONCE(1);
 }
 
+static int resctrl_ctrl_mb_mode_show(struct kernfs_open_file *of,
+				     struct seq_file *seq, void *v)
+{
+	struct rdt_resource_final *f = rdt_kn_parent_priv(of->kn);
+	struct rdt_resource *r = f->res;
+
+	guard(mutex)(&rdtgroup_mutex);
+
+	switch (r->mode) {
+	case RESCTRL_CTRL_LEGACY:
+		seq_puts(seq, "[legacy] native\n");
+		break;
+	case RESCTRL_CTRL_NATIVE:
+		seq_puts(seq, "legacy [native]\n");
+		break;
+	default:
+		WARN_ONCE(1, "%s: unexpected MB control mode %d\n",
+			  f->name, r->mode);
+		seq_puts(seq, "legacy native\n");
+		break;
+	}
+
+	return 0;
+}
+
+static struct rftype resctrl_ctrl_mb_files[] = {
+	{
+		.name		= "mode",
+		.mode		= 0444,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= resctrl_ctrl_mb_mode_show,
+		/*
+		 * Directory-level file, not per-control: fflags is only a
+		 * presence flag here, not the BIT(ctrl->type) type filter used
+		 * by resctrl_add_ctrl_files().
+		 */
+		.fflags		= 1,
+	}
+};
+
+static int resctrl_ctrl_add_files(struct kernfs_node *kn)
+{
+	struct rftype *rfts, *rft;
+	int ret, len;
+
+	rfts = resctrl_ctrl_mb_files;
+	len = ARRAY_SIZE(resctrl_ctrl_mb_files);
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	for (rft = rfts; rft < rfts + len; rft++) {
+		if (rft->fflags) {
+			ret = rdtgroup_add_file(kn, rft);
+			if (ret)
+				goto error;
+		}
+	}
+
+	return 0;
+error:
+	pr_warn("Failed to add %s, err=%d\n", rft->name, ret);
+	while (--rft >= rfts) {
+		if (rft->fflags)
+			kernfs_remove_by_name(kn, rft->name);
+	}
+	return ret;
+}
+
 /*
  * No need to cleanup on exit - caller calls the recursive kernfs_remove()
  * on failure.
@@ -2704,17 +2772,24 @@ static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
 				      struct rdt_resource_final *f)
 {
 	struct kernfs_node *kn_subdir, *kn_ctrl;
+	struct rdt_resource *r = f->res;
 	struct resctrl_ctrl *ctrl;
 	char ctrl_full_name[20];
 	int ret;
 
-	kn_subdir = kernfs_create_dir(kn, "resource_schemata", kn->mode, NULL);
+	kn_subdir = kernfs_create_dir(kn, "resource_schemata", kn->mode, f);
 	if (IS_ERR(kn_subdir))
 		return PTR_ERR(kn_subdir);
 
 	ret = rdtgroup_kn_set_ugid(kn_subdir);
 	if (ret)
 		return ret;
+
+	if (r->mode) {
+		ret = resctrl_ctrl_add_files(kn_subdir);
+		if (ret)
+			return ret;
+	}
 
 	for_each_resource_ctrl(ctrl, f->res) {
 		ret = snprintf(ctrl_full_name, sizeof(ctrl_full_name), "%s%s%s",

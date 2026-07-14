@@ -257,6 +257,16 @@ enum resctrl_ctrl_unit {
 	RESCTRL_CTRL_UNIT_GBPS,
 };
 
+enum resctrl_ctrl_mode {
+	/*
+	 * Default (zero) value: the resource does not support control
+	 * emulation, so no resource_schemata/mode file is created for it.
+	 */
+	RESCTRL_CTRL_MODE_NONE = 0,
+	RESCTRL_CTRL_LEGACY,
+	RESCTRL_CTRL_NATIVE,
+};
+
 /**
  * struct resctrl_membw - Memory bandwidth allocation related data
  * @min_bw:		Minimum memory bandwidth percentage user can request
@@ -399,6 +409,12 @@ struct resctrl_ctrl {
  *			different memory bandwidths
  * @cache_io_alloc_capable:True if portion of the cache can be configured
  *			   for I/O traffic.
+ * @mode:		Control emulation mode for this resource.
+ *			RESCTRL_CTRL_MODE_NONE if the resource does not support
+ *			emulation. "legacy": keep the legacy MB control,
+ *			emulating it with a native control when it has no MBW
+ *			hardware of its own. "native": expose native controls
+ *			directly with no emulation.
  * @controls:		List of controls of an alloc_capable resource
  */
 struct rdt_resource {
@@ -413,6 +429,7 @@ struct rdt_resource {
 	bool				bw_delay_linear;
 	enum membw_throttle_mode	bw_throttle_mode;
 	bool				cache_io_alloc_capable;
+	enum resctrl_ctrl_mode		mode;
 	struct list_head		controls;
 };
 
