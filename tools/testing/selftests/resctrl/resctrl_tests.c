@@ -17,6 +17,7 @@ volatile int *value_sink = &sink_target;
 static struct resctrl_test *resctrl_tests[] = {
 	&mbm_test,
 	&mba_test,
+	&mb_emulation_test,
 	&cmt_test,
 	&l3_cat_test,
 	&l3_noncont_cat_test,
