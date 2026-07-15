@@ -1087,6 +1087,58 @@ down and recreated, so a concurrent reader may briefly observe
 the control subdirectories are informational only and the actual bandwidth
 configuration in each group's ``schemata`` file is unaffected.
 
+The following illustrates one such configuration on ARM MPAM.
+
+ARM MPAM example
+~~~~~~~~~~~~~~~~
+On ARM MPAM systems where the MBA resource is backed by a memory-level
+MSC, the kernel exposes two bandwidth controls:
+
+``MB`` (default):
+	The legacy control. When the L3 cache MSC has usable MBA hardware,
+	this control is backed by cache-level MBW (``mbw_max``) hardware,
+	its ``status`` reads ``enabled``, and its ``scope`` reads ``L3``.
+	The ``MB:`` schemata line uses L3 cache identifiers.
+
+``MB_NODE``:
+	The native, node-scoped control. When the memory MSC has usable MBA
+	hardware, this control is backed by node-level MBW hardware, its
+	``status`` reads ``enabled``, and its ``scope`` reads ``NODE``.
+	The ``MB_NODE:`` schemata line uses NUMA node identifiers.
+
+``MB_NODE`` is the native control that emulates ``MB`` in legacy mode
+when ``MB`` has no MBW hardware of its own.
+
+``MB_NODE`` is only created on a memory-class MBA resource, and such a
+resource is only registered when it has usable MBA hardware, so whenever
+``MB_NODE`` is present its ``status`` reads ``enabled``. (If ``MB_NODE``
+is not supported it is simply absent from ``info/MB/resource_schemata/``.)
+The control subdirectory layout therefore depends only on the ``MB``
+control's ``status`` (the trees below show ``legacy`` mode; in ``native``
+mode every control is a sibling directly under ``resource_schemata/``):
+
+**MB disabled, MB_NODE enabled** (``MB`` emulated by ``MB_NODE``)::
+
+	info/MB/resource_schemata/
+	├── mode
+	└── MB/
+	    ├── scope                     # NODE
+	    ├── status                    # disabled
+	    └── MB_NODE/
+	        ├── scope                 # NODE
+	        └── status                # enabled
+
+**MB enabled, MB_NODE enabled**::
+
+	info/MB/resource_schemata/
+	├── mode
+	├── MB/
+	│   ├── scope                     # L3
+	│   └── status                    # enabled
+	└── MB_NODE/
+	    ├── scope                     # NODE
+	    └── status                    # enabled
+
 Memory bandwidth Allocation specified in MiBps
 ----------------------------------------------
 
