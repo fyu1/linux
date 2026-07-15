@@ -81,6 +81,28 @@ to modify those settings.
 Each subdirectory contains the following files with respect to
 allocation:
 
+"resource_schemata":
+		Directory describing the controls exposed for each alloc-capable
+		resource (for example L3, L2, and MB). Each control has its own
+		subdirectory. Control names are formed from the resource name and
+		an optional suffix when a resource exposes more than one control
+		(for example ``MB`` and ``MB_NODE`` on MBA resources).
+
+		Each control subdirectory is read-only and contains ``scope``
+		and ``type`` files. Bandwidth (scalar) controls also expose a
+		``status`` file that reads ``enabled`` when the control is backed
+		by bandwidth-control hardware and ``disabled`` otherwise.
+
+		On resources that support control emulation (see "MBA control
+		emulation" below), this directory also contains a writable
+		``mode`` file that selects the active control mode (``legacy``
+		or ``native``). This is not the same as the per-resource-group
+		``mode`` file described below under "Resource Groups", which
+		selects shareable/exclusive cache allocation. Switching emulation
+		modes only changes observable behaviour when the default control
+		is disabled and emulated by another control. On resources that do
+		not support control emulation, no ``mode`` file is created.
+
 Cache resource(L3/L2)  subdirectory contains the following files
 related to allocation:
 
@@ -617,6 +639,10 @@ When control is enabled all CTRL_MON groups will also contain:
 	file. On successful pseudo-locked region creation the mode will
 	automatically change to "pseudo-locked".
 
+	This is not the ``mode`` file under ``info/<resource>/resource_schemata/``,
+	which selects MBA control emulation mode (``legacy`` or ``native``); see
+	"MBA control emulation" below.
+
 "ctrl_hw_id":
 	Available only with debug option. The identifier used by hardware
 	for the control group. On x86 this is the CLOSID.
@@ -965,6 +991,73 @@ Memory b/w domain is L3 cache.
 ::
 
 	MB:<cache_id0>=bandwidth0;<cache_id1>=bandwidth1;...
+
+MBA control emulation
+---------------------
+Some platforms expose memory bandwidth allocation through a native control
+(for example a node-scoped control) rather than the legacy ``MB`` control
+that existing tools expect. To preserve backward compatibility, legacy mode
+(the default) keeps the ``MB:`` entry in ``schemata`` when the default
+``MB`` control has no hardware of its own. A native control emulates ``MB``
+behind the scenes so user tools that read or write only the ``MB:`` line
+continue to work. In native mode the disabled ``MB`` control has no
+``schemata`` line; tools use the native control's line instead.
+
+Nesting under ``resource_schemata`` and schemata mirroring take effect
+only when an architecture driver configures which control emulates which
+(for example by setting the ``emulated_by`` relationship described in the
+kernel API).
+
+When the default ``MB`` control has no MBW hardware of its own
+(``status`` reads ``disabled``), it is emulated by a native control in
+legacy mode. In that case:
+
+- The native control is nested under ``MB`` in
+  ``info/MB/resource_schemata/``.
+- Schemata reads and writes for the ``MB:`` line are mirrored through
+  the native control so both lines show and update the same values.
+
+When ``MB`` is enabled, the native control is a sibling of ``MB`` in
+``info/MB/resource_schemata/``, and the two controls operate
+independently.
+
+Emulation mode
+~~~~~~~~~~~~~~
+Whether a disabled control is emulated is selected by the writable
+``mode`` file in ``info/MB/resource_schemata/``. This is not the same
+as the per-resource-group ``mode`` file under each ``<group>/`` directory,
+which selects shareable/exclusive cache allocation; see "Resource Groups"
+above. Reading it shows the available modes with the active one in brackets,
+for example::
+
+	# cat /sys/fs/resctrl/info/MB/resource_schemata/mode
+	[legacy] native
+
+``legacy`` (default):
+	A disabled ``MB`` control is emulated by a native control. The
+	native control is nested under ``MB`` in
+	``info/MB/resource_schemata/`` and schemata reads and writes for
+	the ``MB:`` line are mirrored through it. This keeps the ``MB:``
+	entry working for existing tools.
+
+``native``:
+	No emulation is performed. A disabled ``MB`` control has no ``MB:``
+	schemata line, the native control is a sibling of ``MB`` directly
+	under ``info/MB/resource_schemata/``, and each visible schemata line
+	only reflects its own hardware.
+
+The mode is changed by writing to the file::
+
+	# echo native > /sys/fs/resctrl/info/MB/resource_schemata/mode
+
+Switching mode rebuilds the ``info/MB/resource_schemata/`` control
+subdirectories so their nesting matches the new mode.
+
+While a mode write is being processed the control subdirectories are torn
+down and recreated, so a concurrent reader may briefly observe
+``resource_schemata/`` containing only the ``mode`` file. This is expected:
+the control subdirectories are informational only and the actual bandwidth
+configuration in each group's ``schemata`` file is unaffected.
 
 Memory bandwidth Allocation specified in MiBps
 ----------------------------------------------
