@@ -44,48 +44,79 @@ The supported features are:
   placement.
 
 * Memory bandwidth maximum controls (MBW_MAX) on or after the L3 cache.
-  resctrl uses the L3 cache-id to identify where the memory bandwidth
-  control is applied. For this reason the platform must have an L3 cache
-  with cache-id's supplied by firmware. (It doesn't need to support MPAM.)
+  resctrl exposes these as the ``MB`` resource.  The domain identifiers
+  used in the ``MB:`` schemata line depend on which MSC group backs the
+  resource:
 
-  To be exported as the 'MB' schema, the topology of the group of MSC chosen
-  must match the topology of the L3 cache so that the cache-id's can be
-  repainted. For example: Platforms with Memory bandwidth maximum controls
-  on CPU-less NUMA nodes cannot expose the 'MB' schema to resctrl as these
-  nodes do not have a corresponding L3 cache. If the memory bandwidth
-  control is on the memory rather than the L3 then there must be a single
-  global L3 as otherwise it is unknown which L3 the traffic came from. There
-  must be no caches between the L3 and the memory so that the two ends of
-  the path have equivalent traffic.
+  **L3-cache MSC (cache-level MB control).**
+  When the MB control hardware sits on the L3 cache MSC, resctrl uses L3
+  cache-ids to identify where bandwidth is applied.  The topology of the
+  MSC group must match the L3 cache topology so that cache-ids can be
+  repainted.  If the memory bandwidth control is on the memory rather
+  than the L3 then there must be a single global L3 as otherwise it is
+  unknown which L3 the traffic came from.  There must be no caches
+  between the L3 and the memory so that the two ends of the path have
+  equivalent traffic.
 
-  When the MPAM driver finds multiple groups of MSC it can use for the 'MB'
-  schema, it prefers the group closest to the L3 cache.
+  **Memory MSC (memory-level MB control).**
+  When the MB control hardware sits on a memory MSC above L3, resctrl uses
+  NUMA node identifiers instead of L3 cache-ids.  The native node-scoped
+  control is exposed as ``MB_NODE``; the legacy ``MB`` control keeps the
+  ``MB:`` schemata line for backward compatibility and, in the default
+  legacy mode, is emulated by ``MB_NODE`` when it has no hardware of its
+  own.  See the MB control emulation section in
+  Documentation/filesystems/resctrl.rst for the control layout and
+  emulation modes.
+
+  On either path, read the control ``scope`` file under
+  ``info/MB/resource_schemata/`` (``L3`` or ``NODE``) to learn which
+  identifier space the ``MB:`` line uses.
+
+  When ``scope`` reads ``NODE``, each numeric ID ``XX`` in the ``MB:``
+  line is a NUMA node id and corresponds to the standard NUMA node
+  directory ``/sys/devices/system/node/nodeXX/``.  That directory
+  describes the node: ``cpulist``/``cpumap`` (the CPUs local to it, empty
+  for a CPU-less node), ``distance`` (NUMA distances to other nodes),
+  ``meminfo`` (its memory), and its ``memoryX`` symlinks.  Use these
+  files to map an ``MB:`` (or ``MB_NODE:``) entry to a physical NUMA node
+  and its CPUs and memory.
+
+  **CPU-less NUMA nodes.**
+  A memory MSC may be associated with a NUMA node that has no local CPUs
+  (for example a memory-only node that still participates in bandwidth
+  control).  The driver falls back to ``cpu_possible_mask`` for the MSC
+  affinity so that traffic from remote CPUs is still accounted for and
+  the node can appear as an ``MB``/``MB_NODE`` domain.
+
+  When the MPAM driver finds multiple groups of MSC it can use for the
+  ``MB`` resource, it prefers the group closest to the L3 cache.
 
 * Cache Storage Usage (CSU) counters can expose the 'llc_occupancy' provided
   there is at least one CSU monitor on each MSC that makes up the L3 group.
   Exposing CSU counters from other caches or devices is not supported.
 
-* Memory Bandwidth Usage (MBWU) on or after the L3 cache.  resctrl uses the
-  L3 cache-id to identify where the memory bandwidth is measured. For this
-  reason the platform must have an L3 cache with cache-id's supplied by
-  firmware. (The platform doesn't need to support MPAM.)
+* Memory Bandwidth Usage (MBWU) on or after the L3 cache.  resctrl can
+  expose ``mbm_total_bytes`` from either an L3-cache MSC or a memory MSC:
 
-  Memory bandwidth monitoring makes use of MBWU monitors in each MSC that
-  makes up the L3 group. If the memory bandwidth monitoring is on the memory
-  rather than the L3 then there must be a single global L3 as otherwise it
-  is unknown which L3 the traffic came from.
+  **L3-cache MSC.**
+  When MBWU monitors sit on the L3 cache MSC, counters are exposed on the
+  ``L3_MON`` resource and use L3 cache-ids.  The MSC group topology must
+  match the L3 cache topology so that cache-ids can be repainted.
 
-  To expose 'mbm_total_bytes', the topology of the group of MSC chosen must
-  match the topology of the L3 cache so that the cache-id's can be
-  repainted. For example: Platforms with Memory bandwidth monitors on
-  CPU-less NUMA nodes cannot expose 'mbm_total_bytes' as these nodes do not
-  have a corresponding L3 cache. 'mbm_local_bytes' is not exposed as MPAM
-  cannot distinguish local traffic from global traffic.
+  **Memory MSC.**
+  When MBWU monitors sit on a memory MSC above L3, counters are exposed on
+  the ``MB`` resource with node scope.  Monitor directories are named
+  ``mon_NODE_XX`` where ``XX`` is the same NUMA node identifier that appears
+  in the ``MB:`` schemata line.  CPU-less memory nodes are supported the
+  same way as for MB controls above.
 
-  All these restrictions based on L3 cache are due to resctrl, currently, only
-  supporting monitoring at the L3 scope. It is expected that going forward more
-  MBWU monitors can be exposed to the user after support for more monitoring
-  scopes is added to resctrl.
+  ``mbm_local_bytes`` is not exposed as MPAM cannot distinguish local
+  traffic from global traffic on these paths.
+
+  When only L3-scoped monitoring was supported, platforms with memory
+  bandwidth monitors on CPU-less NUMA nodes could not expose
+  ``mbm_total_bytes``.  Node-scoped monitoring on the ``MB`` resource
+  removes that restriction for memory-class MSCs.
 
 Reporting Bugs
 ==============
