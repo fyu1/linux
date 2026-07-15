@@ -4147,6 +4147,7 @@ static void rdtgroup_init_mba(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 		cfg = &d->staged_config[CDP_NONE];
 		cfg->new_ctrl = resctrl_get_default_ctrlval(ctrl);
 		cfg->have_new_ctrl = true;
+		cfg->staged_ctrl = ctrl;
 	}
 }
 

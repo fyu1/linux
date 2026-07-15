@@ -121,10 +121,16 @@ struct pseudo_lock_region {
  * struct resctrl_staged_config - parsed configuration to be applied
  * @new_ctrl:		new ctrl value to be loaded
  * @have_new_ctrl:	whether the user provided new_ctrl is valid
+ * @staged_ctrl:	the control whose schemata line staged this config.
+ *			Used to tell a real duplicate domain in one schemata
+ *			line from the mirrored write of an emulated control
+ *			and the control that backs it, which share the same
+ *			staged config.
  */
 struct resctrl_staged_config {
 	u32			new_ctrl;
 	bool			have_new_ctrl;
+	struct resctrl_ctrl	*staged_ctrl;
 };
 
 enum resctrl_domain_type {

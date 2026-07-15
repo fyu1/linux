@@ -28,6 +28,13 @@ struct rdt_parse_data {
 	u32			closid;
 	enum rdtgrp_mode	mode;
 	char			*buf;
+	/*
+	 * The control whose schemata line is being parsed, before any
+	 * redirection to a backing control. Used to distinguish a real
+	 * duplicate domain from the mirrored write of an emulated control and
+	 * the control that backs it.
+	 */
+	struct resctrl_ctrl	*line_ctrl;
 };
 
 typedef int (ctrlval_parser_t)(struct rdt_parse_data *data,
@@ -105,7 +112,7 @@ static int parse_bw(struct rdt_parse_data *data, struct rdt_resource_final *f,
 	u32 bw_val;
 
 	cfg = &d->staged_config[f->conf_type];
-	if (cfg->have_new_ctrl) {
+	if (cfg->have_new_ctrl && cfg->staged_ctrl == data->line_ctrl) {
 		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
 		return -EINVAL;
 	}
@@ -118,8 +125,18 @@ static int parse_bw(struct rdt_parse_data *data, struct rdt_resource_final *f,
 		return 0;
 	}
 
+	if (cfg->have_new_ctrl) {
+		if (cfg->new_ctrl != bw_val) {
+			rdt_last_cmd_printf("Conflicting values for domain %d\n",
+					    d->hdr.id);
+			return -EINVAL;
+		}
+		return 0;
+	}
+
 	cfg->new_ctrl = bw_val;
 	cfg->have_new_ctrl = true;
+	cfg->staged_ctrl = data->line_ctrl;
 
 	return 0;
 }
@@ -185,7 +202,7 @@ static int parse_cbm(struct rdt_parse_data *data, struct rdt_resource_final *f,
 	u32 cbm_val;
 
 	cfg = &d->staged_config[f->conf_type];
-	if (cfg->have_new_ctrl) {
+	if (cfg->have_new_ctrl && cfg->staged_ctrl == data->line_ctrl) {
 		rdt_last_cmd_printf("Duplicate domain %d\n", d->hdr.id);
 		return -EINVAL;
 	}
@@ -228,6 +245,7 @@ static int parse_cbm(struct rdt_parse_data *data, struct rdt_resource_final *f,
 
 	cfg->new_ctrl = cbm_val;
 	cfg->have_new_ctrl = true;
+	cfg->staged_ctrl = data->line_ctrl;
 
 	return 0;
 }
@@ -238,11 +256,50 @@ static int parse_cbm(struct rdt_parse_data *data, struct rdt_resource_final *f,
  * separated by ";". The "id" is in decimal, and must match one of
  * the "id"s for this resource.
  */
+/*
+ * A control can be emulated by another control (for example the legacy,
+ * resource-wide MB control emulated by a node-scoped bandwidth control). When
+ * the control has no MBW hardware of its own (membw.no_mbw_hw), reads and writes
+ * are redirected to the control that emulates it (emulated_by) so both schemata
+ * lines show and update the same value.
+ *
+ * Emulation is only performed in legacy mode. In native mode
+ * (RESCTRL_CTRL_NATIVE) a control without hardware is left as-is, so a
+ * disabled control is not emulated by another control.
+ */
+static struct resctrl_ctrl *resctrl_ctrl_backing(struct rdt_resource *r,
+						 struct resctrl_ctrl *ctrl)
+{
+	if (r->mode == RESCTRL_CTRL_LEGACY &&
+	    ctrl->type == RESCTRL_CTRL_SCALAR &&
+	    ctrl->emulated_by && ctrl->membw.no_mbw_hw)
+		return ctrl->emulated_by;
+
+	return ctrl;
+}
+
+/*
+ * A control emulated by another control has no MBW hardware of its own, so it
+ * only has a schemata line while emulation is active. Emulation is performed
+ * in legacy mode only, so in native mode such a control is hidden from
+ * schemata rather than showing an empty or meaningless line.
+ */
+static bool resctrl_ctrl_schemata_hidden(struct rdt_resource *r,
+					 struct resctrl_ctrl *ctrl)
+{
+	if (ctrl->type != RESCTRL_CTRL_SCALAR ||
+	    !ctrl->emulated_by || !ctrl->membw.no_mbw_hw)
+		return false;
+
+	return r->mode != RESCTRL_CTRL_LEGACY;
+}
+
 static int parse_line(char *line, struct rdt_resource_final *f,
 		      struct resctrl_ctrl *ctrl, struct rdtgroup *rdtgrp)
 {
 	enum resctrl_conf_type t = f->conf_type;
 	ctrlval_parser_t *parse_ctrlval = NULL;
+	struct resctrl_ctrl *line_ctrl = ctrl;
 	struct resctrl_staged_config *cfg;
 	struct rdt_resource *r = f->res;
 	struct rdt_parse_data data;
@@ -252,6 +309,9 @@ static int parse_line(char *line, struct rdt_resource_final *f,
 
 	/* Walking r->domains, ensure it can't race with cpuhp */
 	lockdep_assert_cpus_held();
+
+	/* A control without MBW hardware mirrors the control that emulates it. */
+	ctrl = resctrl_ctrl_backing(r, ctrl);
 
 	parse_ctrlval = resctrl_ctrl_priv_all[ctrl->type].parser;
 
@@ -276,6 +336,7 @@ next:
 			data.buf = dom;
 			data.closid = rdtgrp->closid;
 			data.mode = rdtgrp->mode;
+			data.line_ctrl = line_ctrl;
 			if (parse_ctrlval(&data, f, d, ctrl))
 				return -EINVAL;
 			if (rdtgrp->mode ==  RDT_MODE_PSEUDO_LOCKSETUP) {
@@ -418,7 +479,7 @@ static int rdtgroup_parse_ctrl(char *ctrlname, char *tok,
 	list_for_each_entry(f, &rdt_resource_final_all, list) {
 		if (!strcmp(resname, f->name) && rdtgrp->closid < f->num_closid) {
 			ctrl = resctrl_resource_ctrl_get(f->res, ctrlname);
-			if (ctrl)
+			if (ctrl && !resctrl_ctrl_schemata_hidden(f->res, ctrl))
 				return parse_line(tok, f, ctrl, rdtgrp);
 			else
 				break;
@@ -511,6 +572,7 @@ static void show_doms(struct seq_file *s, struct rdt_resource_final *f,
 		      bool print_ctrl, int closid, struct resctrl_ctrl *ctrl)
 {
 	struct rdt_resource *r = f->res;
+	struct resctrl_ctrl *vctrl;
 	struct rdt_ctrl_domain *dom;
 	bool sep = false;
 	u32 ctrl_val;
@@ -523,17 +585,23 @@ static void show_doms(struct seq_file *s, struct rdt_resource_final *f,
 				resctrl_ctrl_is_default(ctrl) ? "" : "_",
 				resctrl_ctrl_is_default(ctrl) ?
 				 "" : resctrl_ctrl_name_str(ctrl->name));
-	list_for_each_entry(dom, &ctrl->domains, hdr.list) {
+
+	/*
+	 * A control without MBW hardware has no values of its own; show the
+	 * values of the control that emulates it so both schemata lines match.
+	 */
+	vctrl = resctrl_ctrl_backing(r, ctrl);
+	list_for_each_entry(dom, &vctrl->domains, hdr.list) {
 		if (sep)
 			seq_puts(s, ";");
 
-		if (is_mba_sc(r, ctrl))
+		if (is_mba_sc(r, vctrl))
 			ctrl_val = dom->mbps_val[closid];
 		else
-			ctrl_val = resctrl_arch_get_config(r, ctrl, dom, closid,
+			ctrl_val = resctrl_arch_get_config(r, vctrl, dom, closid,
 							   f->conf_type);
 
-		seq_printf(s, resctrl_ctrl_priv_all[ctrl->type].fmt_str,
+		seq_printf(s, resctrl_ctrl_priv_all[vctrl->type].fmt_str,
 			   dom->hdr.id, ctrl_val);
 		sep = true;
 	}
@@ -553,11 +621,14 @@ int rdtgroup_schemata_show(struct kernfs_open_file *of,
 	if (rdtgrp) {
 		if (rdtgrp->mode == RDT_MODE_PSEUDO_LOCKSETUP) {
 			list_for_each_entry(f, &rdt_resource_final_all, list) {
-				for_each_resource_ctrl(ctrl, f->res)
+				for_each_resource_ctrl(ctrl, f->res) {
+					if (resctrl_ctrl_schemata_hidden(f->res, ctrl))
+						continue;
 					seq_printf(s, "%s%s%s:uninitialized\n", f->name,
 						   resctrl_ctrl_is_default(ctrl) ? "" : "_",
 						   resctrl_ctrl_is_default(ctrl) ?
 						    "" : resctrl_ctrl_name_str(ctrl->name));
+				}
 			}
 		} else if (rdtgrp->mode == RDT_MODE_PSEUDO_LOCKED) {
 			if (!rdtgrp->plr->d) {
@@ -574,8 +645,11 @@ int rdtgroup_schemata_show(struct kernfs_open_file *of,
 			list_for_each_entry(f, &rdt_resource_final_all, list) {
 				if (closid >= f->num_closid)
 					continue;
-				for_each_resource_ctrl(ctrl, f->res)
+				for_each_resource_ctrl(ctrl, f->res) {
+					if (resctrl_ctrl_schemata_hidden(f->res, ctrl))
+						continue;
 					show_doms(s, f, true, closid, ctrl);
+				}
 			}
 		}
 	} else {
@@ -1147,6 +1221,7 @@ next:
 			data.buf = dom;
 			data.mode = RDT_MODE_SHAREABLE;
 			data.closid = closid;
+			data.line_ctrl = ctrl;
 			if (parse_cbm(&data, f, d, ctrl))
 				return -EINVAL;
 			/*
