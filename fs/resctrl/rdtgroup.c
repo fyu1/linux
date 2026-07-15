@@ -2239,6 +2239,9 @@ static int resctrl_ctrl_scope_show(struct kernfs_open_file *of,
 	case RESCTRL_L2_CACHE:
 		seq_puts(seq, "L2\n");
 		return 0;
+	case RESCTRL_NODE:
+		seq_puts(seq, "NODE\n");
+		return 0;
 	default:
 		/* resctrl does not yet support any other control scope */
 		seq_puts(seq, "Unsupported control scope\n");

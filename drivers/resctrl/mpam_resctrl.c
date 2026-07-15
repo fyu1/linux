@@ -1253,20 +1253,133 @@ void resctrl_arch_config_cntr(struct rdt_resource *r, struct rdt_l3_mon_domain *
 	resctrl_arch_reset_cntr(r, d, closid, rmid, cntr_id, evtid);
 }
 
+/* Fixme: Is this a right helper? How to get MB and MB_NODE together */
+static bool mpam_resctrl_ctrl_node(struct rdt_resource *r)
+{
+	struct mpam_resctrl_res *res;
+	struct mpam_class *class;
+
+	res = container_of(r, struct mpam_resctrl_res, resctrl_res);
+	class = res->class;
+
+	return mpam_class_memory(class);
+}
+
+static bool mpam_resctrl_cache_has_mba(void)
+{
+	struct mpam_resctrl_res *l3_res = &mpam_resctrl_controls[RDT_RESOURCE_L3];
+	struct mpam_class *class = l3_res->class;
+
+	if (!class)
+		return false;
+
+	return class_has_usable_mba(&class->props);
+}
+
+static void _mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
+					struct mpam_resctrl_ctrl *mpam_ctrl,
+					struct mpam_props *cprops,
+					enum resctrl_ctrl_name name)
+{
+	mpam_ctrl->r_ctrl.type = RESCTRL_CTRL_SCALAR;
+	mpam_ctrl->r_ctrl.name = name;
+	INIT_LIST_HEAD_RCU(&mpam_ctrl->r_ctrl.domains);
+
+	mpam_ctrl->r_ctrl.membw.min_bw = get_mba_min(cprops);
+	mpam_ctrl->r_ctrl.membw.max_bw = MAX_MBA_BW;
+	mpam_ctrl->r_ctrl.membw.bw_gran = get_mba_granularity(cprops);
+
+	if (mpam_resctrl_ctrl_node(r)) {
+		/*
+		 * Default to legacy mode so a disabled MB control is emulated
+		 * by the node-scoped control, keeping the "MB:" schemata line
+		 * for backward compatibility. User space can switch to native
+		 * mode to disable emulation.
+		 */
+		r->mode = RESCTRL_CTRL_LEGACY;
+		/*
+		 * On a memory-class resource the legacy MB control is backed by
+		 * the L3 cache MBW hardware when the cache has usable MBA, so it
+		 * keeps cache scope. Otherwise it is node-scoped and emulated by
+		 * the MB_NODE control.
+		 */
+		if (name == RESCTRL_CTRL_NAME_DEF && mpam_resctrl_cache_has_mba())
+			mpam_ctrl->r_ctrl.scope = RESCTRL_L3_CACHE;
+		else
+			mpam_ctrl->r_ctrl.scope = RESCTRL_NODE;
+	} else {
+		mpam_ctrl->r_ctrl.scope = RESCTRL_L3_CACHE;
+		r->mode = RESCTRL_CTRL_LEGACY;
+	}
+}
+
+static void mpam_resctrl_ctrl_set_mbw_status(struct resctrl_ctrl *ctrl,
+					     struct rdt_resource *r,
+					     struct mpam_props *cprops)
+{
+	switch (ctrl->name) {
+	case RESCTRL_CTRL_NAME_DEF:
+		if (mpam_resctrl_ctrl_node(r))
+			ctrl->membw.no_mbw_hw = !mpam_resctrl_cache_has_mba();
+		else
+			ctrl->membw.no_mbw_hw = !class_has_usable_mba(cprops);
+		break;
+	case RESCTRL_CTRL_NAME_NODE:
+		ctrl->membw.no_mbw_hw = !class_has_usable_mba(cprops);
+		break;
+	default:
+		ctrl->membw.no_mbw_hw = true;
+		break;
+	}
+}
+
+static int mpam_resctrl_ctrl_init_mba(struct rdt_resource *r,
+				      struct mpam_props *cprops)
+{
+	struct mpam_resctrl_ctrl *ctrl_def;
+
+	ctrl_def = kzalloc_obj(*ctrl_def);
+	if (!ctrl_def)
+		return -ENOMEM;
+
+	_mpam_resctrl_ctrl_init_mba(r, ctrl_def, cprops, RESCTRL_CTRL_NAME_DEF);
+	mpam_resctrl_ctrl_set_mbw_status(&ctrl_def->r_ctrl, r, cprops);
+	list_add(&ctrl_def->r_ctrl.entry, &r->controls);
+
+	if (mpam_resctrl_ctrl_node(r)) {
+		struct mpam_resctrl_ctrl *ctrl_node;
+
+		ctrl_node = kzalloc_obj(*ctrl_node);
+		if (ctrl_node) {
+			_mpam_resctrl_ctrl_init_mba(r, ctrl_node, cprops,
+						    RESCTRL_CTRL_NAME_NODE);
+			mpam_resctrl_ctrl_set_mbw_status(&ctrl_node->r_ctrl, r,
+							 cprops);
+			if (ctrl_def->r_ctrl.membw.no_mbw_hw)
+				ctrl_def->r_ctrl.emulated_by = &ctrl_node->r_ctrl;
+
+			list_add(&ctrl_node->r_ctrl.entry, &r->controls);
+		}
+	}
+
+	return 0;
+}
+
 static int mpam_resctrl_control_init(struct mpam_resctrl_res *res)
 {
 	struct mpam_class *class = res->class;
 	struct mpam_props *cprops = &class->props;
 	struct rdt_resource *r = &res->resctrl_res;
 	struct mpam_resctrl_ctrl *mpam_ctrl;
-
-	mpam_ctrl = kzalloc_obj(*mpam_ctrl);
-	if (!mpam_ctrl)
-		return -ENOMEM;
+	int ret = 0;
 
 	switch (r->rid) {
 	case RDT_RESOURCE_L2:
 	case RDT_RESOURCE_L3:
+		mpam_ctrl = kzalloc_obj(*mpam_ctrl);
+		if (!mpam_ctrl)
+			return -ENOMEM;
+
 		mpam_ctrl->r_ctrl.type = RESCTRL_CTRL_BITMAP;
 		mpam_ctrl->r_ctrl.name = RESCTRL_CTRL_NAME_DEF;
 		INIT_LIST_HEAD_RCU(&mpam_ctrl->r_ctrl.domains);
@@ -1298,18 +1411,12 @@ static int mpam_resctrl_control_init(struct mpam_resctrl_res *res)
 		r->alloc_capable = true;
 		break;
 	case RDT_RESOURCE_MBA:
-		mpam_ctrl->r_ctrl.type = RESCTRL_CTRL_SCALAR;
-		mpam_ctrl->r_ctrl.scope = RESCTRL_L3_CACHE;
-		mpam_ctrl->r_ctrl.name = RESCTRL_CTRL_NAME_DEF;
-		INIT_LIST_HEAD_RCU(&mpam_ctrl->r_ctrl.domains);
+		ret = mpam_resctrl_ctrl_init_mba(r, cprops);
+		if (ret)
+			return ret;
 
 		r->bw_delay_linear = true;
 		r->bw_throttle_mode = THREAD_THROTTLE_UNDEFINED;
-		mpam_ctrl->r_ctrl.membw.min_bw = get_mba_min(cprops);
-		mpam_ctrl->r_ctrl.membw.max_bw = MAX_MBA_BW;
-		mpam_ctrl->r_ctrl.membw.bw_gran = get_mba_granularity(cprops);
-		list_add(&mpam_ctrl->r_ctrl.entry, &r->controls);
-
 		r->name = "MB";
 		r->alloc_capable = true;
 		break;
@@ -1472,7 +1579,7 @@ u32 resctrl_arch_get_config(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 	struct mpam_props *cprops;
 	struct mpam_resctrl_res *res;
 	struct mpam_resctrl_dom *dom;
-	enum mpam_device_features configured_by;
+	enum mpam_device_features configured_by = MPAM_FEATURE_LAST;
 
 	lockdep_assert_cpus_held();
 
@@ -1500,16 +1607,22 @@ u32 resctrl_arch_get_config(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 		configured_by = mpam_feat_cpor_part;
 		break;
 	case RDT_RESOURCE_MBA:
-		if (mpam_has_feature(mpam_feat_mbw_max, cprops)) {
-			configured_by = mpam_feat_mbw_max;
+		switch (ctrl->name) {
+		case RESCTRL_CTRL_NAME_DEF:
+		case RESCTRL_CTRL_NAME_NODE:
+			if (mpam_has_feature(mpam_feat_mbw_max, cprops))
+				configured_by = mpam_feat_mbw_max;
+			break;
+		default:
 			break;
 		}
-		fallthrough;
+		break;
 	default:
 		return resctrl_get_default_ctrlval(ctrl);
 	}
 
-	if (!r->alloc_capable || partid >= resctrl_arch_get_num_closid(r) ||
+	if (configured_by == MPAM_FEATURE_LAST || !r->alloc_capable ||
+	    partid >= resctrl_arch_get_num_closid(r) ||
 	    !mpam_has_feature(configured_by, cfg))
 		return resctrl_get_default_ctrlval(ctrl);
 
@@ -1570,12 +1683,19 @@ int resctrl_arch_update_one(struct rdt_resource *r, struct resctrl_ctrl *ctrl,
 		mpam_set_feature(mpam_feat_cpor_part, &cfg);
 		break;
 	case RDT_RESOURCE_MBA:
-		if (mpam_has_feature(mpam_feat_mbw_max, cprops)) {
-			cfg.mbw_max = percent_to_mbw_max(cfg_val, cprops);
-			mpam_set_feature(mpam_feat_mbw_max, &cfg);
-			break;
+		switch (ctrl->name) {
+		case RESCTRL_CTRL_NAME_DEF:
+		case RESCTRL_CTRL_NAME_NODE:
+			if (mpam_has_feature(mpam_feat_mbw_max, cprops)) {
+				cfg.mbw_max = percent_to_mbw_max(cfg_val, cprops);
+				mpam_set_feature(mpam_feat_mbw_max, &cfg);
+				break;
+			}
+			return -EINVAL;
+		default:
+			return -EINVAL;
 		}
-		fallthrough;
+		break;
 	default:
 		return -EINVAL;
 	}
