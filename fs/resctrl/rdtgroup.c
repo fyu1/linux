@@ -995,6 +995,15 @@ void *rdt_kn_parent_priv(struct kernfs_node *kn)
 	return rcu_dereference(kn->__parent)->priv;
 }
 
+static struct kernfs_node *rdt_kn_parent(struct kernfs_node *kn)
+{
+	/*
+	 * Valid within the RCU section it was obtained or while rdtgroup_mutex
+	 * is held.
+	 */
+	return rcu_dereference_check(kn->__parent, lockdep_is_held(&rdtgroup_mutex));
+}
+
 static int rdt_num_closids_show(struct kernfs_open_file *of,
 				struct seq_file *seq, void *v)
 {
@@ -2713,72 +2722,22 @@ static unsigned long fflags_from_resource(struct rdt_resource *r)
 	return WARN_ON_ONCE(1);
 }
 
-static int resctrl_ctrl_mb_mode_show(struct kernfs_open_file *of,
-				     struct seq_file *seq, void *v)
+/*
+ * Format the sysfs directory name of @ctrl (for example "MB" or "MB_NODE")
+ * into @buf. Returns -ENOSPC if the name would be truncated.
+ */
+static int resctrl_ctrl_full_name(struct rdt_resource_final *f,
+				  struct resctrl_ctrl *ctrl, char *buf, size_t size)
 {
-	struct rdt_resource_final *f = rdt_kn_parent_priv(of->kn);
-	struct rdt_resource *r = f->res;
+	int ret;
 
-	guard(mutex)(&rdtgroup_mutex);
-
-	switch (r->mode) {
-	case RESCTRL_CTRL_LEGACY:
-		seq_puts(seq, "[legacy] native\n");
-		break;
-	case RESCTRL_CTRL_NATIVE:
-		seq_puts(seq, "legacy [native]\n");
-		break;
-	default:
-		WARN_ONCE(1, "%s: unexpected MB control mode %d\n",
-			  f->name, r->mode);
-		seq_puts(seq, "legacy native\n");
-		break;
-	}
+	ret = snprintf(buf, size, "%s%s%s",
+		       f->name, resctrl_ctrl_is_default(ctrl) ? "" : "_",
+		       resctrl_ctrl_is_default(ctrl) ? "" : resctrl_ctrl_name_str(ctrl->name));
+	if (ret >= size)
+		return -ENOSPC;
 
 	return 0;
-}
-
-static struct rftype resctrl_ctrl_mb_files[] = {
-	{
-		.name		= "mode",
-		.mode		= 0444,
-		.kf_ops		= &rdtgroup_kf_single_ops,
-		.seq_show	= resctrl_ctrl_mb_mode_show,
-		/*
-		 * Directory-level file, not per-control: fflags is only a
-		 * presence flag here, not the BIT(ctrl->type) type filter used
-		 * by resctrl_add_ctrl_files().
-		 */
-		.fflags		= 1,
-	}
-};
-
-static int resctrl_ctrl_add_files(struct kernfs_node *kn)
-{
-	struct rftype *rfts, *rft;
-	int ret, len;
-
-	rfts = resctrl_ctrl_mb_files;
-	len = ARRAY_SIZE(resctrl_ctrl_mb_files);
-
-	lockdep_assert_held(&rdtgroup_mutex);
-
-	for (rft = rfts; rft < rfts + len; rft++) {
-		if (rft->fflags) {
-			ret = rdtgroup_add_file(kn, rft);
-			if (ret)
-				goto error;
-		}
-	}
-
-	return 0;
-error:
-	pr_warn("Failed to add %s, err=%d\n", rft->name, ret);
-	while (--rft >= rfts) {
-		if (rft->fflags)
-			kernfs_remove_by_name(kn, rft->name);
-	}
-	return ret;
 }
 
 static int resctrl_ctrl_create_subdir(struct kernfs_node *kn_dir,
@@ -2788,11 +2747,9 @@ static int resctrl_ctrl_create_subdir(struct kernfs_node *kn_dir,
 	char ctrl_full_name[20];
 	int ret;
 
-	ret = snprintf(ctrl_full_name, sizeof(ctrl_full_name), "%s%s%s",
-		       f->name, resctrl_ctrl_is_default(ctrl) ? "" : "_",
-		       resctrl_ctrl_is_default(ctrl) ? "" : resctrl_ctrl_name_str(ctrl->name));
-	if (ret >= sizeof(ctrl_full_name))
-		return -ENOSPC;
+	ret = resctrl_ctrl_full_name(f, ctrl, ctrl_full_name, sizeof(ctrl_full_name));
+	if (ret)
+		return ret;
 
 	*kn_ctrl = kernfs_create_dir(kn_dir, ctrl_full_name, kn_dir->mode, ctrl);
 	if (IS_ERR(*kn_ctrl))
@@ -2802,30 +2759,22 @@ static int resctrl_ctrl_create_subdir(struct kernfs_node *kn_dir,
 }
 
 /*
- * No need to cleanup on exit - caller calls the recursive kernfs_remove()
- * on failure.
+ * Create a control subdirectory for each control under the
+ * resource_schemata directory @kn_subdir.
+ *
+ * No need to cleanup on exit - caller removes the created directories on
+ * failure (either via the recursive kernfs_remove() of an ancestor or by
+ * rebuilding the subdirectories).
  */
-static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
-				      struct rdt_resource_final *f)
+static int resctrl_ctrl_create_subdirs(struct kernfs_node *kn_subdir,
+				       struct rdt_resource_final *f)
 {
-	struct kernfs_node *kn_subdir, *kn_ctrl, *kn_ctrl_def = NULL;
+	struct kernfs_node *kn_ctrl, *kn_ctrl_def = NULL;
 	struct resctrl_ctrl *ctrl, *ctrl_def = NULL;
 	struct rdt_resource *r = f->res;
 	int ret;
 
-	kn_subdir = kernfs_create_dir(kn, "resource_schemata", kn->mode, f);
-	if (IS_ERR(kn_subdir))
-		return PTR_ERR(kn_subdir);
-
-	ret = rdtgroup_kn_set_ugid(kn_subdir);
-	if (ret)
-		return ret;
-
-	if (r->mode) {
-		ret = resctrl_ctrl_add_files(kn_subdir);
-		if (ret)
-			return ret;
-	}
+	lockdep_assert_held(&rdtgroup_mutex);
 
 	/*
 	 * Create the default control sub-dir first. Emulated controls are
@@ -2869,6 +2818,252 @@ static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
 		if (ret)
 			return ret;
 	}
+
+	return 0;
+}
+
+/*
+ * Remove every control subdirectory under the resource_schemata directory
+ * @kn_subdir, leaving the directory itself and its own files (for example
+ * "mode") in place. The default control directory is removed recursively so
+ * any control nested underneath it is removed too; removing a control that is
+ * not a direct child is a no-op.
+ */
+static void resctrl_ctrl_remove_subdirs(struct kernfs_node *kn_subdir,
+					struct rdt_resource_final *f)
+{
+	char ctrl_full_name[20];
+	struct resctrl_ctrl *ctrl;
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	for_each_resource_ctrl(ctrl, f->res) {
+		if (resctrl_ctrl_full_name(f, ctrl, ctrl_full_name, sizeof(ctrl_full_name)))
+			continue;
+		kernfs_remove_by_name(kn_subdir, ctrl_full_name);
+	}
+}
+
+/*
+ * Rebuild the control subdirectories under resource_schemata to match the
+ * current mode. Used when the mode changes at runtime.
+ *
+ * The control directories have the same names in both modes (only their
+ * nesting differs), so the old directories must be removed before the new
+ * ones can be created - kernfs_create_dir() would otherwise fail with
+ * -EEXIST. Between the removal and the following kernfs_activate() there is
+ * a brief window in which resource_schemata contains only its own files (for
+ * example "mode") and no control subdirectories. This is acceptable: the
+ * rebuild only happens on an explicit mode write, runs under rdtgroup_mutex,
+ * and the control subdirectories are purely informational (scope, type,
+ * status) - the actual bandwidth configuration lives in each group's
+ * "schemata" file and is unaffected.
+ *
+ * On failure any partially created subdirectories are removed, so
+ * resource_schemata is left with no control subdirectories at all (its own
+ * files such as "mode" remain). The caller is expected to restore a
+ * consistent layout, typically by reverting the change that triggered the
+ * rebuild and calling this function again. If that second rebuild also
+ * fails there is no further automatic recovery and the control
+ * subdirectories stay missing until the next successful rebuild or a
+ * remount; the caller should report this to user space.
+ */
+static int resctrl_ctrl_rebuild_subdirs(struct kernfs_node *kn_subdir,
+					struct rdt_resource_final *f)
+{
+	int ret;
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	resctrl_ctrl_remove_subdirs(kn_subdir, f);
+
+	ret = resctrl_ctrl_create_subdirs(kn_subdir, f);
+	if (ret) {
+		/* Drop any partially created subdirectories. */
+		resctrl_ctrl_remove_subdirs(kn_subdir, f);
+		return ret;
+	}
+
+	kernfs_activate(kn_subdir);
+
+	return 0;
+}
+
+static int resctrl_ctrl_mb_mode_show(struct kernfs_open_file *of,
+				     struct seq_file *seq, void *v)
+{
+	struct rdt_resource_final *f = rdt_kn_parent_priv(of->kn);
+	struct rdt_resource *r = f->res;
+
+	guard(mutex)(&rdtgroup_mutex);
+
+	switch (r->mode) {
+	case RESCTRL_CTRL_LEGACY:
+		seq_puts(seq, "[legacy] native\n");
+		break;
+	case RESCTRL_CTRL_NATIVE:
+		seq_puts(seq, "legacy [native]\n");
+		break;
+	default:
+		WARN_ONCE(1, "%s: unexpected MB control mode %d\n",
+			  f->name, r->mode);
+		seq_puts(seq, "legacy native\n");
+		break;
+	}
+
+	return 0;
+}
+
+static ssize_t resctrl_ctrl_mb_mode_write(struct kernfs_open_file *of,
+					  char *buf, size_t nbytes, loff_t off)
+{
+	struct rdt_resource_final *f = rdt_kn_parent_priv(of->kn);
+	struct rdt_resource *r = f->res;
+	enum resctrl_ctrl_mode mode;
+	int ret = 0;
+
+	guard(mutex)(&rdtgroup_mutex);
+	rdt_last_cmd_clear();
+
+	/* Valid input requires a trailing newline */
+	if (nbytes == 0 || buf[nbytes - 1] != '\n') {
+		rdt_last_cmd_puts("Invalid input\n");
+		return -EINVAL;
+	}
+
+	buf[nbytes - 1] = '\0';
+
+	if (!strcmp(buf, "native")) {
+		mode = RESCTRL_CTRL_NATIVE;
+	} else if (!strcmp(buf, "legacy")) {
+		mode = RESCTRL_CTRL_LEGACY;
+	} else {
+		rdt_last_cmd_puts("Invalid input\n");
+		return -EINVAL;
+	}
+
+	if (mode != r->mode) {
+		enum resctrl_ctrl_mode old_mode = r->mode;
+
+		r->mode = mode;
+
+		/*
+		 * The resource_schemata directory layout depends on the mode
+		 * (emulated controls are nested in legacy mode only), so rebuild
+		 * the control subdirectories to match the new mode.
+		 */
+		ret = resctrl_ctrl_rebuild_subdirs(rdt_kn_parent(of->kn), f);
+		if (ret) {
+			int rollback_ret;
+
+			/*
+			 * Roll back to the previous mode and rebuild so the
+			 * mode reported by this file stays consistent with the
+			 * directory layout.
+			 */
+			r->mode = old_mode;
+			rollback_ret = resctrl_ctrl_rebuild_subdirs(rdt_kn_parent(of->kn), f);
+			if (rollback_ret) {
+				/*
+				 * The rollback rebuild also failed:
+				 * resource_schemata may now be missing control
+				 * subdirectories. Report the inconsistency to the
+				 * kernel log and to last_cmd_status, and return
+				 * -EIO so user space can tell from the write()
+				 * error that the filesystem state is unreliable
+				 * rather than just that the mode switch failed.
+				 */
+				pr_err("%s: failed to restore resource_schemata (mode change error %d, restore error %d), control subdirectories may be missing\n",
+				       f->name, ret, rollback_ret);
+				rdt_last_cmd_puts("resource_schemata rebuild failed\n");
+				ret = -EIO;
+			} else {
+				/*
+				 * The requested mode change failed but the
+				 * previous mode and its directory layout were
+				 * restored, so the filesystem is consistent. Keep
+				 * the original error from the forward rebuild.
+				 */
+				rdt_last_cmd_puts("Failed to switch mode, reverted\n");
+			}
+		}
+	}
+
+	return ret ?: nbytes;
+}
+
+static struct rftype resctrl_ctrl_mb_files[] = {
+	{
+		.name		= "mode",
+		.mode		= 0644,
+		.kf_ops		= &rdtgroup_kf_single_ops,
+		.seq_show	= resctrl_ctrl_mb_mode_show,
+		.write		= resctrl_ctrl_mb_mode_write,
+		/*
+		 * Directory-level file, not per-control: fflags is only a
+		 * presence flag here, not the BIT(ctrl->type) type filter used
+		 * by resctrl_add_ctrl_files().
+		 */
+		.fflags		= 1,
+	}
+};
+
+static int resctrl_ctrl_add_files(struct kernfs_node *kn)
+{
+	struct rftype *rfts, *rft;
+	int ret, len;
+
+	rfts = resctrl_ctrl_mb_files;
+	len = ARRAY_SIZE(resctrl_ctrl_mb_files);
+
+	lockdep_assert_held(&rdtgroup_mutex);
+
+	for (rft = rfts; rft < rfts + len; rft++) {
+		if (rft->fflags) {
+			ret = rdtgroup_add_file(kn, rft);
+			if (ret)
+				goto error;
+		}
+	}
+
+	return 0;
+error:
+	pr_warn("Failed to add %s, err=%d\n", rft->name, ret);
+	while (--rft >= rfts) {
+		if (rft->fflags)
+			kernfs_remove_by_name(kn, rft->name);
+	}
+	return ret;
+}
+
+/*
+ * No need to cleanup on exit - caller calls the recursive kernfs_remove()
+ * on failure.
+ */
+static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
+				      struct rdt_resource_final *f)
+{
+	struct kernfs_node *kn_subdir;
+	struct rdt_resource *r = f->res;
+	int ret;
+
+	kn_subdir = kernfs_create_dir(kn, "resource_schemata", kn->mode, f);
+	if (IS_ERR(kn_subdir))
+		return PTR_ERR(kn_subdir);
+
+	ret = rdtgroup_kn_set_ugid(kn_subdir);
+	if (ret)
+		return ret;
+
+	if (r->mode) {
+		ret = resctrl_ctrl_add_files(kn_subdir);
+		if (ret)
+			return ret;
+	}
+
+	ret = resctrl_ctrl_create_subdirs(kn_subdir, f);
+	if (ret)
+		return ret;
 
 	kernfs_activate(kn_subdir);
 
@@ -4564,15 +4759,6 @@ static int rdtgroup_rmdir_ctrl(struct rdtgroup *rdtgrp, cpumask_var_t tmpmask)
 	free_all_child_rdtgrp(rdtgrp);
 
 	return 0;
-}
-
-static struct kernfs_node *rdt_kn_parent(struct kernfs_node *kn)
-{
-	/*
-	 * Valid within the RCU section it was obtained or while rdtgroup_mutex
-	 * is held.
-	 */
-	return rcu_dereference_check(kn->__parent, lockdep_is_held(&rdtgroup_mutex));
 }
 
 static int rdtgroup_rmdir(struct kernfs_node *kn)
