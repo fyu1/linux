@@ -2728,7 +2728,7 @@ static int resctrl_mkdir_schemata_dir(struct kernfs_node *kn,
 		if (IS_ERR(kn_ctrl))
 			return PTR_ERR(kn_ctrl);
 
-		ret = rdtgroup_kn_set_ugid(kn_subdir);
+		ret = rdtgroup_kn_set_ugid(kn_ctrl);
 		if (ret)
 			return ret;
 
