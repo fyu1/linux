@@ -3948,6 +3948,20 @@ static void mon_rmdir_one_subdir(struct kernfs_node *pkn, char *name, char *subn
 }
 
 /*
+ * Label used in the mon_<label>_<id> monitor domain directory names. Node
+ * scoped monitoring (for example MB on a memory MSC) uses "NODE" so the id
+ * is understood as a NUMA node id; other scopes keep the resource name
+ * (L3 -> "L3", telemetry -> "PERF_PKG").
+ */
+static const char *mon_domain_name(struct rdt_resource *r)
+{
+	if (r->mon_scope == RESCTRL_NODE)
+		return "NODE";
+
+	return r->name;
+}
+
+/*
  * Remove files and directories for one SNC node. If it is the last node
  * sharing an L3 cache, then remove the upper level directory containing
  * the "sum" files too.
@@ -3990,7 +4004,7 @@ static void rmdir_mondata_subdir_allrdtgrp(struct rdt_resource *r,
 		return;
 	}
 
-	sprintf(name, "mon_%s_%02d", r->name, hdr->id);
+	sprintf(name, "mon_%s_%02d", mon_domain_name(r), hdr->id);
 	list_for_each_entry(prgrp, &rdt_all_groups, rdtgroup_list) {
 		kernfs_remove_by_name(prgrp->mon.mon_data_kn, name);
 
@@ -4094,7 +4108,7 @@ static int mkdir_mondata_subdir(struct kernfs_node *parent_kn,
 	if (r->rid == RDT_RESOURCE_L3 && r->mon_scope == RESCTRL_L3_NODE)
 		return mkdir_mondata_subdir_snc(parent_kn, hdr, r, prgrp);
 
-	sprintf(name, "mon_%s_%02d", r->name, hdr->id);
+	sprintf(name, "mon_%s_%02d", mon_domain_name(r), hdr->id);
 	kn = _mkdir_mondata_subdir(parent_kn, name, hdr, r, prgrp, hdr->id);
 	if (IS_ERR(kn))
 		return PTR_ERR(kn);
@@ -4149,8 +4163,11 @@ static int mkdir_mondata_subdir_alldom(struct kernfs_node *parent_kn,
  * This creates a directory mon_data which contains the monitored data.
  *
  * mon_data has one directory for each domain which are named
- * in the format mon_<domain_name>_<domain_id>. For ex: A mon_data
- * with L3 domain looks as below:
+ * in the format mon_<domain_name>_<domain_id>. The domain name is the
+ * resource name for cache and telemetry scopes (for example "L3") and
+ * "NODE" for node scoped monitoring (for example MB on a memory MSC,
+ * where <domain_id> is a NUMA node id). For ex: A mon_data with L3 domain
+ * looks as below:
  * ./mon_data:
  * mon_L3_00
  * mon_L3_01
