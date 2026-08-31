@@ -550,8 +550,10 @@ with the following files:
 	the user. Each event within a resctrl group can be assigned independently.
 
 	In this mode, a monitoring event can only accumulate data while it is backed
-	by a hardware counter. Use "mbm_L3_assignments" found in each CTRL_MON and MON
-	group to specify which of the events should have a counter assigned. The number
+	by a hardware counter. Use the assignment file in each CTRL_MON and MON
+	group: "mbm_L3_assignments" when MBM is backed by an L3-cache MSC, or
+	"mbm_NODE_assignments" when MBM is backed by a NUMA-node MSC.
+	The number
 	of counters available is described in the "num_mbm_cntrs" file. Changing the
 	mode may cause all counters on the resource to reset.
 
@@ -859,9 +861,12 @@ When monitoring is enabled all MON groups will also contain:
 
 When monitoring is enabled all MON groups may also contain:
 
-"mbm_L3_assignments":
+"mbm_L3_assignments" / "mbm_NODE_assignments":
 	Exists when "mbm_event" counter assignment mode is supported and lists the
-	counter assignment states of the group.
+	counter assignment states of the group. "mbm_L3_assignments" is
+	exposed when MBM is backed by an L3-cache MSC.
+	"mbm_NODE_assignments" is exposed when MBM is backed by a NUMA-node
+	MSC. The file format is the same.
 
 	The assignment list is displayed in the following format:
 
